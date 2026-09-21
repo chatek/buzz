@@ -15,7 +15,9 @@ import { expect, test } from "@playwright/test";
  * copyable link and an honest note about upstream Buzz — is what appears when a
  * machine cannot open it.
  */
-test("Open in Buzz explains itself instead of doing nothing", async ({ page }) => {
+test("Open in Buzz explains itself instead of doing nothing", async ({
+  page,
+}) => {
   await page.goto("/");
 
   const link = page.locator('a[href^="buzz://"]:visible').first();
