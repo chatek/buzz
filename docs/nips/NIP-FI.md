@@ -296,7 +296,20 @@ A disconnect call causes the relay to:
    pubkey, synchronously.
 
 The deny set is held **in relay memory only** — no durable storage, no schema
-changes.  A relay restart MAY forget active deny entries.  If the issuer stops
+changes.  A relay restart MAY forget active deny entries.
+
+> **⚠️ vclaw DIVERGENCE (2026-09-21, deliberate — not an implementation slip).** This deployment
+> **persists** the deny set: `(iss, k, until)` rows live in the gateway's own store, written through
+> the authenticated admin API and read by `Admit`. **A restart MUST NOT restore a revoked key.** The
+> spec's memory-only allowance is rejected here because it is the same defect class this estate spent
+> the week removing: *a control whose effect disappears while the surface still reads as configured.*
+> Two consequences for anyone implementing or testing this surface:
+> 1. **The persistence divergence is normative** — an implementation that follows the paragraph above
+>    is **compliant with the spec and wrong for this deployment**.
+> 2. **`AutoMigrate=false` means the deny table must exist**: a gateway without it **denies every
+>    NIP-FI admission** (fail-closed, correct) and looks exactly like "NIP-FI rejects everyone". The
+>    table ships **in the same change that enables `enforce`**.
+> Recorded in `docs/IDP_OVERHAUL_BACKLOG_2026-09-21.md`. — vclaw lead, session 01a0adac  If the issuer stops
 issuing assertions and re-push completes before any expired-entry reconnection
 attempt, the residual exposure after a restart is bounded by
 `max(0, min(exp, iat + maximum_assertion_age) - now)`.  If the issuer continues
