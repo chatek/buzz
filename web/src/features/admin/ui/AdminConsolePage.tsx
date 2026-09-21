@@ -43,6 +43,7 @@ import { Badge } from "@/shared/ui/badge";
 import {
   type IdpFailure,
   type IdpSource,
+  observationStamp,
   observedSurface,
 } from "../idp-source";
 import type {
@@ -172,18 +173,32 @@ function CallerLine() {
 export function AdminConsolePage() {
   const { source, fixtureError, search } = useConsoleSource();
   const probe = useSurfaceProbe(source);
+  // HOOKS BEFORE ANY EARLY RETURN: this one must be declared here, not next to the
+  // derivation below, or the rules-of-hooks order changes when the fixture branch is
+  // taken (caught by `biome`'s useHookAtTopLevel, which is why it lives here).
+  // The page's own clock, read ONCE when the probe settles: React Query can report
+  // both of its timestamps as 0 for a refused read, and a refused read must still
+  // say when it was taken.
+  const [observedAt, setObservedAt] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    if (probe.isPending) return;
+    setObservedAt((previous) => previous ?? Date.now());
+  }, [probe.isPending]);
+
   const [tab, setTab] = React.useState<TabId>(() =>
     isTabId(search.tab) ? search.tab : "consent",
   );
 
   if (fixtureError || !source) {
+    // The KIND carries the words: `bad_fixture` is an entry in the one table both
+    // surfaces read, so this case cannot drift from the rest. `status` is null and
+    // the path is the URL, because no endpoint was contacted.
     const failure: IdpFailure = {
-      kind: "not_found",
+      kind: "bad_fixture",
       status: null,
       path: `?fixture=${search.fixture ?? ""}`,
-      title: "Unknown staged capture",
-      meaning:
-        "The fixture named on this URL does not exist, so no source could be built. The console refuses rather than quietly reading live data under a URL that asked for staged data.",
+      title: "",
+      meaning: "",
       evidence: `${fixtureError ?? "no source"} — known captures: ${STAGED_FIXTURE_IDS.join(", ")}`,
     };
     return (
@@ -196,15 +211,21 @@ export function AdminConsolePage() {
   const staged = source.kind === "staged";
   // The probe is taken once per page load, through the same read seam the panels
   // use, so the header cannot observe something a panel would not.
+  const stamp = observationStamp({
+    isPending: probe.isPending,
+    dataUpdatedAt: probe.dataUpdatedAt,
+    errorUpdatedAt: probe.errorUpdatedAt,
+    observedAt,
+  });
   const observation = observedSurface({
     kind: source.kind,
     isPending: probe.isPending,
     isError: probe.isError,
     error: probe.error,
     hasData: probe.data !== undefined,
-    at: probe.dataUpdatedAt
-      ? new Date(probe.dataUpdatedAt).toISOString()
-      : null,
+    // The stamp is the SETTLED read's time, success or failure — see
+    // `observationStamp` for why success alone is not enough.
+    at: stamp.at,
   });
 
   return (
@@ -270,8 +291,10 @@ export function AdminConsolePage() {
         */}
         <p
           className="mt-1 text-[11px] leading-4"
-          data-testid="surface-observation"
           data-outcome={observation.outcome}
+          data-read-at={stamp.at ?? ""}
+          data-read-at-source={stamp.source ?? "none"}
+          data-testid="surface-observation"
         >
           <span className="font-medium">This page observed:</span>{" "}
           {observation.sentence}

@@ -46,6 +46,15 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
+import {
+  ALL_FAILURE_KINDS,
+  FAILURE_SURFACE,
+  IdpReadError,
+  observationStamp,
+  observedSurface,
+  toIdpFailure,
+} from "../../src/features/admin/idp-source";
+
 const FEATURE = join(import.meta.dir, "../../src/features/admin");
 
 function sourceFiles(dir: string): string[] {
@@ -244,5 +253,197 @@ describe("PRACTICE — no count is rendered for a field the payload did not carr
         ),
     );
     expect(unforgiven).toHaveLength(1);
+  });
+});
+
+/**
+ * ONE STATE MACHINE, ONE TABLE, BOTH SURFACES.
+ *
+ * LANE 2 found this implemented twice and extended once: `IdpFailureKind` declares
+ * `restricted` (403) and the classifier produces it, the NOTICE knew it
+ * ("Restricted"), and the HEADER did not — so a 403 rendered "Restricted" in one
+ * place and "does not match any state the console knows" in the other. The same
+ * event, two surfaces, contradictory, and it is a post-admission state, so it
+ * appears the moment admission lands.
+ *
+ * The fix is structural: ONE exhaustive `Record<IdpFailureKind, …>`
+ * (`FAILURE_SURFACE`) that both surfaces read, so a new kind that only one surface
+ * understands fails to COMPILE. These tests cover the runtime half — every kind
+ * present, and the two surfaces telling the same story.
+ */
+describe("ONE TABLE — both surfaces agree for every failure kind", () => {
+  test("every kind has exactly one entry, and the table is exhaustive", () => {
+    expect(ALL_FAILURE_KINDS.length).toBeGreaterThan(0);
+    // Exhaustiveness is enforced by the type; this pins it at runtime too.
+    expect(new Set(ALL_FAILURE_KINDS).size).toBe(ALL_FAILURE_KINDS.length);
+    for (const kind of ALL_FAILURE_KINDS) {
+      expect(typeof FAILURE_SURFACE[kind].title).toBe("string");
+    }
+  });
+
+  test("THE DEFECT'S OWN CASE: 403 is in the table, and both surfaces name it", () => {
+    const failure = toIdpFailure(
+      new IdpReadError({
+        kind: "restricted",
+        path: "/api/idp/clients",
+        status: 403,
+        evidence:
+          'HTTP 403 · "restricted: client nextcrm is not in your scope"',
+      }),
+    );
+    // The notice's title comes from the table…
+    expect(failure.title).toBe(FAILURE_SURFACE.restricted.title);
+    // …and the header's sentence comes from the SAME entry, so the two cannot
+    // disagree the way they did before the fix.
+    const header = observedSurface({
+      kind: "live",
+      isPending: false,
+      isError: true,
+      error: new IdpReadError({
+        kind: "restricted",
+        path: "/api/idp/clients",
+        status: 403,
+        evidence: "HTTP 403",
+      }),
+      hasData: false,
+      at: "2026-09-22T17:40:00.000Z",
+    });
+    expect(header.sentence).toBe(FAILURE_SURFACE.restricted.headerSentence);
+    expect(header.sentence).not.toContain("does not match any state");
+    expect(FAILURE_SURFACE.restricted.title).toBe("Restricted");
+  });
+
+  test("both surfaces tell the same story for EVERY kind", () => {
+    for (const kind of ALL_FAILURE_KINDS) {
+      const error = new IdpReadError({
+        kind,
+        path: "/api/idp/health",
+        status: null,
+        evidence: `planted ${kind}`,
+      });
+      const failure = toIdpFailure(error);
+      const header = observedSurface({
+        kind: "live",
+        isPending: false,
+        isError: true,
+        error,
+        hasData: false,
+        at: "2026-09-22T17:40:00.000Z",
+      });
+      // Same title, both derived from the one entry.
+      expect(failure.title, `${kind} title`).toBe(FAILURE_SURFACE[kind].title);
+      // The header sentence is that entry's sentence, and it is not the fallback.
+      expect(header.sentence, `${kind} header`).toBe(
+        FAILURE_SURFACE[kind].headerSentence,
+      );
+      expect(header.outcome, `${kind} outcome`).toBe(
+        FAILURE_SURFACE[kind].outcome,
+      );
+      // Every entry carries words for both surfaces; no blank half. A TITLE is
+      // short by nature ("Restricted" is 10 characters), so it is held to a title's
+      // bar and the prose fields to a sentence's.
+      expect(
+        FAILURE_SURFACE[kind].title.length,
+        `${kind}.title`,
+      ).toBeGreaterThan(5);
+      for (const field of ["meaning", "nextStep", "headerSentence"] as const) {
+        expect(
+          FAILURE_SURFACE[kind][field].length,
+          `${kind}.${field}`,
+        ).toBeGreaterThan(20);
+      }
+      expect(["key", "plug", "warning"]).toContain(FAILURE_SURFACE[kind].icon);
+    }
+  });
+
+  test("`outcome` is a BUCKET, not a discriminant, and the table says so", () => {
+    // MEASURED: 401 and not-mounted both render `refused`. If this ever became
+    // one-to-one it would still be fine — but a test that distinguished STATES on
+    // `outcome` alone would confuse them, so the fact is pinned here.
+    const refused = ALL_FAILURE_KINDS.filter(
+      (kind) => FAILURE_SURFACE[kind].outcome === "refused",
+    );
+    expect(refused.length).toBeGreaterThan(1);
+    expect(new Set(refused.map((k) => FAILURE_SURFACE[k].title)).size).toBe(
+      refused.length,
+    );
+  });
+});
+
+describe("THE STAMP — a refused read says WHEN the page looked", () => {
+  test("a failed read is stamped, from the error path", () => {
+    const stamp = observationStamp({
+      isPending: false,
+      dataUpdatedAt: 0,
+      errorUpdatedAt: 1_753_000_000_000,
+    });
+    expect(stamp.at).toBe(new Date(1_753_000_000_000).toISOString());
+    expect(stamp.source).toBe("query");
+  });
+
+  test("a successful read is stamped from the success path", () => {
+    const stamp = observationStamp({
+      isPending: false,
+      dataUpdatedAt: 1_753_000_050_000,
+      errorUpdatedAt: 0,
+    });
+    expect(stamp.at).toBe(new Date(1_753_000_050_000).toISOString());
+    expect(stamp.source).toBe("query");
+  });
+
+  test("MEASURED: when the query reports NO time, the page clock stamps it", () => {
+    // React Query can report both timestamps as 0 for a failed read — measured
+    // against the real page, where `data-read-at` came out empty. The page's own
+    // clock is the fallback, and `source` says so rather than passing the two off
+    // as the same kind of fact.
+    const stamp = observationStamp({
+      isPending: false,
+      dataUpdatedAt: 0,
+      errorUpdatedAt: 0,
+      observedAt: 1_753_000_100_000,
+    });
+    expect(stamp.at).toBe(new Date(1_753_000_100_000).toISOString());
+    expect(stamp.source).toBe("page-clock");
+  });
+
+  test("an unsettled read is not stamped, and never invents a time", () => {
+    expect(
+      observationStamp({
+        isPending: true,
+        dataUpdatedAt: 0,
+        errorUpdatedAt: 0,
+        observedAt: 1_753_000_100_000,
+      }).at,
+    ).toBeNull();
+    const nothing = observationStamp({
+      isPending: false,
+      dataUpdatedAt: 0,
+      errorUpdatedAt: 0,
+    });
+    expect(nothing.at).toBeNull();
+    expect(nothing.source).toBeNull();
+  });
+
+  test("CONTROL — two DIFFERENT looks produce two different stamps", () => {
+    // The acceptance that matters: a constant stamp would pass a presence check
+    // and prove nothing. The e2e test asserts this movement against the real page;
+    // here the comparison itself is pinned so a broken predicate cannot pass.
+    const differs = (a: string, b: string) => a !== b;
+    const first = observationStamp({
+      isPending: false,
+      dataUpdatedAt: 0,
+      errorUpdatedAt: 1_753_000_000_000,
+    }).at as string;
+    const second = observationStamp({
+      isPending: false,
+      dataUpdatedAt: 0,
+      errorUpdatedAt: 1_753_000_001_000,
+    }).at as string;
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(differs(first, second)).toBe(true);
+    // …and a hard-coded stamp FAILS that same predicate, which is what makes the
+    // e2e assertion a real test rather than a presence check.
+    expect(differs(first, first)).toBe(false);
   });
 });

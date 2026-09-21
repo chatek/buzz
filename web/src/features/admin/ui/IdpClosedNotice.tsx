@@ -32,36 +32,30 @@
 import { KeyRound, PlugZap, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/shared/ui/button";
-import type { IdpFailure, IdpFailureKind } from "../idp-source";
+import {
+  FAILURE_SURFACE,
+  type IdpFailure,
+  type IdpFailureKind,
+} from "../idp-source";
 import { Monospace } from "./idp-bits";
 
-/** Per-kind subordinate line: what to do, or what the state would look like if it changed. */
-const NEXT_STEP: Record<IdpFailureKind, string> = {
-  not_authorized:
-    "Nothing was returned and nothing was withheld: the caller was refused at the door. This notice describes the refusal this read received; it makes no claim about whether the endpoint exists beyond that.",
-  restricted:
-    "Nothing was returned. Ask the operator to add the client to an organization you belong to, or to give you the admin group for it.",
-  not_found:
-    "Nothing was returned. The grant log can still hold rows for this client; open the consent view and look for its client id.",
-  not_mounted:
-    'The endpoint exists in the read model but is not serving here. A 501 is the gateway\'s own "not implemented" answer; a web page in place of JSON means a static host answered the API path. Either way, "surface not mounted" is not "no data".',
-  unavailable:
-    "The endpoint answered and refused — a 503, not an empty result. The detail above is the service's reason, and the health view shows the same state without the refusal.",
-  bad_request:
-    "Nothing was returned. This console builds its own filters, so a rejected one is a defect worth reporting with the path shown above.",
-  no_credential:
-    "Nothing was sent. The console signs its reads with the app's existing credential helper; a failure there is shown rather than worked around.",
-  unreachable:
-    "Nothing was returned. Check that the gateway is up and reachable from this browser, then try again.",
-  unexpected:
-    "Nothing was interpreted. The raw reply is quoted above so it can be read as what it is.",
-};
-
-const KIND_ICON: Partial<Record<IdpFailureKind, typeof KeyRound>> = {
+/**
+ * WHICH ICON THE NOTICE DRAWS — an exhaustive `Record<IdpFailureKind, …>` as well,
+ * so a new kind must be given an icon or `tsc` fails. The notice's WORDS all come
+ * from `FAILURE_SURFACE` in `idp-source.ts`, the same table the header reads, which
+ * is what makes "the same event, two surfaces, contradictory" impossible to build.
+ */
+const KIND_ICON: Record<IdpFailureKind, typeof KeyRound> = {
   not_authorized: KeyRound,
   restricted: KeyRound,
+  no_credential: KeyRound,
   not_mounted: PlugZap,
+  unavailable: PlugZap,
   unreachable: PlugZap,
+  not_found: TriangleAlert,
+  bad_fixture: TriangleAlert,
+  bad_request: TriangleAlert,
+  unexpected: TriangleAlert,
 };
 
 export function IdpClosedNotice({
@@ -71,7 +65,8 @@ export function IdpClosedNotice({
   failure: IdpFailure;
   onRetry?: () => void;
 }) {
-  const Icon = KIND_ICON[failure.kind] ?? TriangleAlert;
+  const copy = FAILURE_SURFACE[failure.kind];
+  const Icon = KIND_ICON[failure.kind];
   const isRestricted = failure.evidence.includes("restricted:");
   return (
     <div
@@ -85,13 +80,13 @@ export function IdpClosedNotice({
         <Icon className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-semibold" data-testid="idp-closed-title">
-            {failure.title}
+            {copy.title}
           </h3>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            {failure.meaning}
+            {copy.meaning}
           </p>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            {NEXT_STEP[failure.kind]}
+            {copy.nextStep}
           </p>
           <dl className="mt-3 space-y-1 text-xs">
             {failure.path ? (

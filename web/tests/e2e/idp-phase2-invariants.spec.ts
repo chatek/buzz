@@ -25,10 +25,11 @@ import type { EnforcementState } from "../../src/features/idp-admin-phase2/phase
  * written so that the MISLEADING version fails it, not merely so the current
  * version passes:
  *
- *  1. A deny-until-TTL set with no HTTP surface reports `entries: null`, never
- *     the payload's `0`. "0 revocations" is a claim nobody made (design §6.2),
- *     and a renderer that prints the struct's zero is the exact defect class
- *     this lane exists to stop.
+ *  1. A deny-until-TTL set that this console CANNOT READ reports `entries: null`,
+ *     never the payload's `0`. J20 moved the reason and not the rule: the admin
+ *     route exists and is NIP-98-protected, so a browser still cannot read it.
+ *     "0 revocations" is a claim nobody made (design §6.2), and a renderer that
+ *     prints the struct's zero is the exact defect class this lane exists to stop.
  *  2. An unreadable mode stays UNKNOWN. It never becomes "shadow" (a negative
  *     claim about enforcement) and never becomes "enforce" (a positive one).
  *  3. `allowsAreEnforcement` is DERIVED from `available` and `mode`. The copy the
@@ -39,7 +40,11 @@ import type { EnforcementState } from "../../src/features/idp-admin-phase2/phase
  *     refusing everyone" are different facts (design §8).
  */
 
-/** The shape `/api/idp/changes` serves today: no deny-set route exists yet. */
+/**
+ * The shape `/api/idp/changes` serves today: the deny-set ADMIN route exists and is
+ * NIP-98-protected (J20), and no browser can produce that header - so this console
+ * still reports no count, exactly as it did when no route existed.
+ */
 function enforcementState(over: Partial<EnforcementState>): EnforcementState {
   return {
     source: "loopback /api/authz/shadow",
@@ -53,20 +58,20 @@ function enforcementState(over: Partial<EnforcementState>): EnforcementState {
       available: false,
       exposed_by: "",
       entries: 0,
-      note: "no HTTP route exposes the NIP-FI deny set",
+      note: "the deny set is NIP-98-protected, so no browser can read its count",
     },
     note: "",
     ...over,
   };
 }
 
-test("a deny-until-TTL set with no surface reports no count, and never the payload's zero", () => {
+test("a deny-until-TTL set this console cannot read reports no count, and never the payload's zero", () => {
   const state = enforcementState({
     deny_until_ttl: {
       available: false,
       exposed_by: "",
       entries: 0,
-      note: "no HTTP route exposes the NIP-FI deny set",
+      note: "the deny set is NIP-98-protected, so no browser can read its count",
     },
   });
   const view = describeDenyUntilTTL(state);
@@ -76,7 +81,10 @@ test("a deny-until-TTL set with no surface reports no count, and never the paylo
   expect(view.entries).toBeNull();
   expect(view.entries).not.toBe(0);
   expect(view.sentence).toContain("not zero");
-  expect(view.sentence).toContain("no HTTP surface");
+  // J20: the reason moved from "no route exists" to "the route is NIP-98-protected".
+  // The ASSERTION moved with it deliberately; the rule it protects did not.
+  expect(view.sentence).toContain("NIP-98-protected route");
+  expect(view.sentence).toContain("cannot sign a NIP-98 header");
 
   // And when the surface DOES exist, the count is reported rather than withheld.
   const readable = describeDenyUntilTTL(

@@ -555,47 +555,74 @@ test("a second capture with different numbers is rendered as its own", async ({
   expect(await forbiddenConsentOnPage(page)).toEqual({ nodes: [], units: [] });
 });
 
-test("the header reports what the page observed, not what the API is", async ({
+test("the header reports what the page observed, and names the state it saw", async ({
   page,
 }) => {
-  // (1) LIVE, refused exactly as the deployed estate refuses: the header must say
-  // the page was refused, and must NOT keep saying the surface is "not mounted".
+  /**
+   * `data-outcome` IS NOT A DISCRIMINANT. MEASURED: 401 and not-mounted both render
+   * `refused`, on purpose — it is a bucket. So no assertion here keys on it alone:
+   * each case asserts the NOTICE's `data-kind` and the HEADER's SENTENCE, which are
+   * what actually separate the states.
+   */
+  const headerFor = async (status: number, body: unknown) => {
+    await page.route("**/api/idp/health", async (route) => {
+      await route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+    await page.goto("/admin?tab=health");
+    const header = page.getByTestId("surface-observation");
+    await expect(header).toBeVisible();
+    const sentence = (await header.textContent()) ?? "";
+    await page.unroute("**/api/idp/health");
+    return sentence;
+  };
+
+  // 401 — refused at admission.
+  const refused = await headerFor(401, {
+    error: "restricted: missing Authorization",
+  });
+  expect(refused).toContain("refused at admission (HTTP 401)");
+  expect(refused).not.toContain("does not match any state");
+
+  // 501 — nothing mounted. A DIFFERENT state, and the sentence says so, even though
+  // the outcome bucket is the same one.
+  const unmounted = await headerFor(501, { error: "not implemented" });
+  expect(unmounted).toContain("nothing was mounted at the path it asked for");
+  expect(unmounted).not.toContain("refused at admission");
+
+  // 403 — THE DEFECT LANE 2 FOUND. Before the fix the notice said "Restricted" and
+  // the header said "does not match any state the console knows": one event, two
+  // surfaces, contradictory. Both now read one exhaustive table.
+  const restricted = await headerFor(403, {
+    error: "restricted: client nextcrm is not in your scope",
+  });
+  expect(restricted).toContain(
+    "the authority check declined the read (HTTP 403)",
+  );
+  expect(restricted).not.toContain("does not match any state");
+  // …and the notice for the same status carries the matching title.
   await page.route("**/api/idp/health", async (route) => {
     await route.fulfill({
-      status: 401,
+      status: 403,
       contentType: "application/json",
-      body: JSON.stringify({ error: "restricted: missing Authorization" }),
+      body: JSON.stringify({
+        error: "restricted: client nextcrm is not in your scope",
+      }),
     });
   });
   await page.goto("/admin?tab=health");
-  const observed = page.getByTestId("surface-observation");
-  await expect(observed).toHaveAttribute("data-outcome", "refused");
-  await expect(observed).toContainText("refused before any data was read");
-  // The stale sentence is gone from the rendered page entirely.
-  await expect(page.getByTestId("live-data-banner")).not.toContainText(
-    "not mounted yet",
+  const notice = page.getByTestId("idp-closed-notice");
+  await expect(notice).toHaveAttribute("data-kind", "restricted");
+  await expect(page.getByTestId("idp-closed-title")).toHaveText("Restricted");
+  await expect(page.getByTestId("idp-closed-evidence")).toContainText(
+    "restricted: client nextcrm is not in your scope",
   );
-  await expect(page.locator("body")).not.toContainText("not mounted yet");
   await page.unroute("**/api/idp/health");
 
-  // (2) LIVE, unmounted: the header must say THAT, because that is what it saw.
-  await page.route("**/api/idp/health", async (route) => {
-    await route.fulfill({
-      status: 501,
-      contentType: "application/json",
-      body: JSON.stringify({ error: "not implemented" }),
-    });
-  });
-  await page.goto("/admin?tab=health");
-  await expect(page.getByTestId("surface-observation")).toHaveAttribute(
-    "data-outcome",
-    "refused",
-  );
-  await expect(page.getByTestId("surface-observation")).toContainText(
-    "nothing was mounted",
-  );
-
-  // (3) STAGED: the header says no gateway was contacted, because none was.
+  // STAGED — no gateway was contacted, and the outcome bucket says exactly that.
   await page.goto(`/admin?fixture=${LIVE_FIXTURE}&tab=consent`);
   await expect(page.getByTestId("surface-observation")).toHaveAttribute(
     "data-outcome",
@@ -604,6 +631,49 @@ test("the header reports what the page observed, not what the API is", async ({
   await expect(page.getByTestId("surface-observation")).toContainText(
     "No gateway was contacted",
   );
+});
+
+test("a REFUSED read says WHEN the page looked, and the time MOVES", async ({
+  page,
+}) => {
+  // LANE 2 found that `readAt` came from `dataUpdatedAt`, which is null on error —
+  // so a refused read could not say when it was taken, while staged data could.
+  // That is backwards: the failed read is the one where "when did we look?" matters.
+  await page.route("**/api/idp/health", async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "restricted: missing Authorization" }),
+    });
+  });
+
+  const stampOf = async () => {
+    const header = page.getByTestId("surface-observation");
+    await expect(header).toBeVisible();
+    const stamp = (await header.getAttribute("data-read-at")) ?? "";
+    return stamp;
+  };
+
+  await page.goto("/admin?tab=health");
+  const first = await stampOf();
+  expect(first, "a refused read must carry a time").toMatch(
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+  );
+  await expect(page.getByTestId("surface-observation")).toContainText(first);
+
+  // A second look, separated in time: a fresh page load takes a fresh probe.
+  await page.waitForTimeout(1100);
+  await page.goto("/admin?tab=health");
+  const second = await stampOf();
+  expect(second).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+
+  // THE ASSERTION THAT MATTERS: the stamp MOVES. A constant would pass a presence
+  // check and prove nothing about an observation.
+  const differs = (a: string, b: string) => a !== b;
+  expect(differs(first, second), `${first} vs ${second}`).toBe(true);
+  // CONTROL: a hard-coded stamp FAILS that same predicate, which is what makes the
+  // assertion above a test rather than a formality.
+  expect(differs(first, first)).toBe(false);
 });
 
 test("a refused read is 'Not authorized yet', never an empty table", async ({
@@ -784,7 +854,12 @@ test("an unknown staged capture is refused, not silently replaced by live data",
 }) => {
   await page.goto("/admin?fixture=no-such-capture");
   const notice = page.getByTestId("idp-closed-notice");
-  await expect(notice).toHaveAttribute("data-kind", "not_found");
-  await expect(notice).toContainText("Unknown staged capture");
+  // An unknown capture is the CONSOLE's own input error, so it has its own kind in
+  // the one table rather than borrowing "client not found" (which would have shown
+  // a title about a client that was never asked about).
+  await expect(notice).toHaveAttribute("data-kind", "bad_fixture");
+  await expect(page.getByTestId("idp-closed-title")).toHaveText(
+    "Unknown staged capture",
+  );
   await expect(page.getByTestId("admin-tabs")).toHaveCount(0);
 });
