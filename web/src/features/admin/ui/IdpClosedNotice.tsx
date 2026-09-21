@@ -14,10 +14,11 @@
  * static host answers the API path. Each is a different fact and gets its own
  * sentence.
  *
- * FOR THE RECORD, and not as a current claim: when this component was written the
- * mount patch had not been applied, so 501 was expected to be the common shape.
- * That is no longer the state, and the 501 branch stays because "nothing is
- * mounted" is a state any deployment can be in again.
+ * HISTORY, DATED AND IN THE PAST TENSE, not a claim about now: until 2026-09-22
+ * this file said "the endpoints are not mounted yet". As of 2026-09-22 the
+ * endpoints ARE mounted and refuse at admission. The 501 branch stays because
+ * "nothing is mounted at this path" remains a state any deployment can be in
+ * again — it is a branch, not a description of today.
  *
  * What this component must NEVER do, and does not:
  *   - keep a spinner running (the read has a deadline; a failure is a failure);

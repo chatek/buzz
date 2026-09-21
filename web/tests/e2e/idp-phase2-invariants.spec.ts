@@ -236,15 +236,24 @@ test("501 is not 401, and no control is enabled without ready and its window", (
     }
   }
 
-  // The gate is not vacuously closed: each control has exactly one cell that
-  // enables it, which is what makes the check above meaningful.
+  // The gate is not vacuously closed, and it is not over-open either: for each
+  // control, the set of matrix cells that ENABLE it is exactly the set the rule
+  // permits. A gate that answered `false` everywhere would pass the loop above
+  // and fail here.
   for (const control of PHASE2_CONTROLS) {
-    const enableable = [false, true].flatMap(() =>
-      (["absent", "mounted_closed", "ready", "unknown"] as const).filter(
-        (readiness) => phase2ControlState(control, readiness, true).enabled,
-      ),
+    const enabling = (
+      ["absent", "mounted_closed", "ready", "unknown"] as const
+    ).flatMap((readiness) =>
+      [false, true]
+        .filter(
+          (windowOpen) =>
+            phase2ControlState(control, readiness, windowOpen).enabled,
+        )
+        .map((windowOpen) => `${readiness}/${windowOpen}`),
     );
-    expect(enableable).toEqual(["ready"]);
+    expect(enabling).toEqual(
+      control.needsWindow ? ["ready/true"] : ["ready/false", "ready/true"],
+    );
   }
 
   expect(IDEMPOTENCY_HEADER).toBe("Idempotency-Key");

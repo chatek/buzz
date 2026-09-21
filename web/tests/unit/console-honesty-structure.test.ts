@@ -82,12 +82,25 @@ export function numericFallbacks(label: string, source: string): Offence[] {
 
 /**
  * Sites where a missing key is legitimate ARITHMETIC over rows rather than a
- * rendered fact — lane 2's allow-list, kept verbatim with its reason.
+ * rendered fact — lane 2's allow-list, with its reason.
+ *
+ * KEYED BY THE OFFENDING EXPRESSION, NOT BY `file:line`, and that is a correction
+ * this check made to itself: it first used lane 2's line-number key, which then
+ * failed because an unrelated doc-comment edit above the line shifted it from 78
+ * to 79. A line number is not a property of the code — it changes whenever
+ * anything above it changes — so that key produced a FALSE FAILURE on an edit that
+ * touched no logic. The snippet IS the property the reason is about, and the test
+ * below keeps the entry narrow enough that another fallback in the same file is
+ * still a violation.
  */
-const ALLOWED: Record<string, string> = {
-  "idp-fixture-builders.ts:78":
-    "sums per-state row counts inside a staged fixture; a missing key means zero rows",
-};
+const ALLOWED: { file: string; snippet: string; reason: string }[] = [
+  {
+    file: "idp-fixture-builders.ts",
+    snippet: "(row[state] ?? 0)",
+    reason:
+      "sums per-state row counts inside a staged fixture; a missing key means zero rows",
+  },
+];
 
 describe("STRUCTURE — the honesty mechanisms exist and are wired", () => {
   test("the Absent primitive exists and the panels use it", () => {
@@ -162,7 +175,13 @@ describe("PRACTICE — no count is rendered for a field the payload did not carr
           readFileSync(path, "utf8"),
         ),
       )
-      .filter((hit) => !(`${hit.file}:${hit.line}` in ALLOWED));
+      .filter(
+        (hit) =>
+          !ALLOWED.some(
+            (allowed) =>
+              allowed.file === hit.file && hit.text.includes(allowed.snippet),
+          ),
+      );
     // The offender list IS the finding: a bare count is not actionable.
     expect(
       offences.map((o) => `${o.file}:${o.line}  ${o.text.slice(0, 84)}`),
@@ -195,11 +214,35 @@ describe("PRACTICE — no count is rendered for a field the payload did not carr
   });
 
   test("the allow-list names a reason for every entry (no blank permissions)", () => {
-    for (const [site, reason] of Object.entries(ALLOWED)) {
-      expect(site, "an allow-list key must be file:line").toMatch(
-        /^[\w.-]+:\d+$/,
-      );
-      expect(reason.length, `${site} needs a real reason`).toBeGreaterThan(20);
+    expect(ALLOWED.length).toBeGreaterThan(0);
+    for (const entry of ALLOWED) {
+      expect(entry.file).toMatch(/^[\w.-]+\.tsx?$/);
+      expect(
+        entry.snippet.length,
+        `${entry.file} needs a snippet`,
+      ).toBeGreaterThan(4);
+      expect(
+        entry.reason.length,
+        `${entry.file} needs a real reason`,
+      ).toBeGreaterThan(20);
     }
+  });
+
+  test("and the allow-list is not a blanket permission for its file", () => {
+    // The snippet must be narrow enough that ANOTHER numeric fallback in the same
+    // file is still a violation: an allow-list entry is a permission for one
+    // expression, not an exemption for a file.
+    const planted = "const other = data.totals.ok ?? 0;";
+    const unforgiven = numericFallbacks(
+      "idp-fixture-builders.ts",
+      planted,
+    ).filter(
+      (hit) =>
+        !ALLOWED.some(
+          (allowed) =>
+            allowed.file === hit.file && hit.text.includes(allowed.snippet),
+        ),
+    );
+    expect(unforgiven).toHaveLength(1);
   });
 });
