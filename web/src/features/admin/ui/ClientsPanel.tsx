@@ -37,6 +37,7 @@ import { IdpClosedNotice } from "./IdpClosedNotice";
 import {
   Absent,
   Chip,
+  CountCard,
   Kv,
   Monospace,
   NumberCard,
@@ -80,6 +81,7 @@ export function ClientsPanel({
   source: IdpSource;
 }) {
   const summary = useIdpConsentSummary(source);
+  const visibleRows = data.clients.length;
   const inventoryIds = new Set(data.clients.map((client) => client.client_id));
   const logIds = (summary.data?.by_client ?? []).map((group) => group.key);
   const inLogNotInInventory = logIds.filter((id) => !inventoryIds.has(id));
@@ -90,35 +92,51 @@ export function ClientsPanel({
   return (
     <div className="space-y-5">
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        <NumberCard
+        {/* NO SUBSTITUTION HERE, and that is the lane-2 finding for this panel: the
+            array length is the number of clients THIS CALLER CAN SEE, so using it
+            under the label "clients in the projection" would report a scoped page
+            as the whole inventory. Absent payload key ⇒ the absence is shown. */}
+        <CountCard
+          absentReason="the payload did not report the inventory size"
           label="clients in the projection"
-          value={data.counts.total ?? data.clients.length}
           note="the whole inventory this service loaded, before any scope filter"
           testId="clients-total"
+          value={data.counts.total}
         />
-        <NumberCard
+        {/* Here the fallback IS the same quantity, directly observed: the number of
+            client rows this page received is the number of clients visible to this
+            caller. Same fact, two readings — allowed to substitute, unlike the one
+            above, and named so the difference is visible. */}
+        <CountCard
+          absentReason="the payload did not report a visible count and no client rows were rendered"
           label="visible to this caller"
-          value={data.counts.visible ?? data.clients.length}
           note="scoped by the clients owned by the caller's organizations, resolved per request"
           testId="clients-visible"
+          value={
+            data.counts.visible ??
+            (data.clients.length > 0 ? visibleRows : undefined)
+          }
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report an out-of-scope count"
           label="outside this caller's scope"
-          value={data.counts.out_of_scope ?? 0}
           note="reported as a count only: out-of-scope clients are never listed"
           testId="clients-out-of-scope"
+          value={data.counts.out_of_scope}
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report an owned count"
           label="owned by an organization"
-          value={data.counts.owned ?? 0}
           note="ownership comes from the registry this service owns, never from a token claim"
           testId="clients-owned"
+          value={data.counts.owned}
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report an unowned count"
           label="unowned"
-          value={data.counts.visible_unowned ?? 0}
           note="an unowned client is reachable only by a global admin — the fail-closed default"
           testId="clients-unowned"
+          value={data.counts.visible_unowned}
         />
         <NumberCard
           label="read at"

@@ -1,10 +1,11 @@
 /**
  * STAGED DATA — the builders the two recorded captures are made with.
  *
- * The staged source exists because the endpoints are implemented and NOT
- * mounted yet, and the live gateway runs with a nil admission function, so
- * every real `/api/idp/*` read is refused today. Without a staged source the
- * five-way classification could not be seen, checked, or screenshotted by
+ * The staged source exists so the five-way classification can be seen, checked and
+ * screenshotted WITHOUT depending on the live surface. MEASURED 2026-09-22: the
+ * route serves, and every `/api/idp/*` read is refused at admission with
+ * `401 restricted: missing Authorization`, so a live read today returns no data at
+ * all. Without a staged source the classification could not be exercised by
  * anybody — and a screen nobody can look at is a screen nobody has verified.
  *
  * THE RULES, which apply to both captures:

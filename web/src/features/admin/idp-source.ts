@@ -7,10 +7,11 @@
  *    helper (`shared/lib/relay-auth.ts`, NIP-98 today) and the same relative
  *    API base the invite flow uses. It adds no new fetch layer.
  *  - `stagedIdpSource(id)` answers from a recorded fixture in `idp-fixtures.ts`.
- *    This is what makes the classification verifiable BEFORE admission lands:
- *    the endpoints are implemented but not mounted, and the live gateway runs
- *    with a nil admission function (`internal/api/auth_nip98.go:129` fails
- *    closed), so every real call is refused today.
+ *    This is what keeps the classification verifiable independently of the live
+ *    surface: MEASURED 2026-09-22, every `/api/idp/*` read is refused at admission
+ *    with `401 restricted: missing Authorization`, so a staged capture is the only
+ *    way to exercise the views without waiting for admission. Nothing about a read
+ *    is inferred from that refusal — the console reports it and stops there.
  *
  * THE FAIL-CLOSED RULE, which is the reason this file is larger than a fetch
  * wrapper: a refusal is NEVER an empty list, a zero, or a spinner. Every
@@ -74,7 +75,7 @@ const FAILURE_COPY: Record<IdpFailureKind, { title: string; meaning: string }> =
     not_authorized: {
       title: "Not authorized yet",
       meaning:
-        "The gateway refused this read before the read model was reached. The IdP admin surface answers only a caller it can resolve to a principal, there is no npub to principal registry yet, and the live process runs with admission failing closed. Every read is refused today; this is the expected state until admission lands.",
+        "The gateway refused this read at admission, before the read model was reached. The IdP admin surface answers only a caller it can resolve to a principal. This notice reports the refusal THIS read received, and nothing more: it is not a statement about whether the surface would answer a different caller.",
     },
     restricted: {
       title: "Restricted",
@@ -171,6 +172,121 @@ export type IdpSource = {
   readonly fixture?: StagedFixture;
   read<T>(path: string, query?: IdpQueryParams): Promise<T>;
 };
+
+// ---------------------------------------------------------------------------
+// THE SURFACE OBSERVATION — what THIS PAGE observed, never what the system is
+//
+// WHY IT EXISTS. The console's header used to carry a build-time sentence: "the
+// endpoints are not mounted yet". A reviewer with a real browser against the LIVE
+// `/admin` saw that sentence next to panels that were answering 401 — a claim about
+// the API's state, written when the file was written, still on screen after the
+// state had moved. The panels were right; the sentence was stale.
+//
+// So the header makes NO claim of its own. It renders the result of the page's OWN
+// probe of the surface, with the time it was taken, and the vocabulary of that
+// sentence is manufactured from the OBSERVED outcome alone: answered, refused,
+// unreachable, not yet read, or staged (no gateway contacted).
+// ---------------------------------------------------------------------------
+
+export type SurfaceOutcome =
+  | "reading"
+  | "answered"
+  | "refused"
+  | "unreachable"
+  | "staged";
+
+export type ObservedSurface = {
+  outcome: SurfaceOutcome;
+  /** ISO timestamp of the observation, or null when nothing has been observed yet. */
+  readAt: string | null;
+  /** One sentence about this page's own read. It describes no other state. */
+  sentence: string;
+};
+
+/**
+ * Derive the header's line from the probe's result. Every branch says what THIS
+ * PAGE did or received; none of them says what the service "is", where it is
+ * deployed, or what it should answer next.
+ */
+export function observedSurface(input: {
+  kind: "live" | "staged";
+  isPending: boolean;
+  isError: boolean;
+  error?: unknown;
+  hasData: boolean;
+  at: string | null;
+}): ObservedSurface {
+  if (input.kind === "staged") {
+    return {
+      outcome: "staged",
+      readAt: input.at,
+      sentence:
+        "No gateway was contacted for this page: every read below was answered from the staged capture named above.",
+    };
+  }
+  if (input.isPending) {
+    return {
+      outcome: "reading",
+      readAt: null,
+      sentence:
+        "This page is reading the surface now; the result of its own probe is not in yet.",
+    };
+  }
+  if (input.isError) {
+    const failure = toIdpFailure(input.error);
+    if (failure.kind === "not_authorized") {
+      return {
+        outcome: "refused",
+        readAt: input.at,
+        sentence:
+          "This page probed the surface and was refused before any data was read (HTTP 401). The panels below report each refused read separately.",
+      };
+    }
+    if (failure.kind === "not_mounted") {
+      return {
+        outcome: "refused",
+        readAt: input.at,
+        sentence:
+          "This page probed the surface and nothing was mounted at the path it asked for. The panels below report each read separately.",
+      };
+    }
+    if (failure.kind === "unavailable") {
+      return {
+        outcome: "refused",
+        readAt: input.at,
+        sentence:
+          "This page probed the surface and the read model refused to answer it (HTTP 503). The panels below report each refused read separately.",
+      };
+    }
+    if (failure.kind === "unreachable") {
+      return {
+        outcome: "unreachable",
+        readAt: input.at,
+        sentence:
+          "This page's probe of the surface did not complete, so nothing here says whether it would have answered.",
+      };
+    }
+    return {
+      outcome: "refused",
+      readAt: input.at,
+      sentence: `This page's probe of the surface did not match any state the console knows: ${failure.evidence}`,
+    };
+  }
+  if (input.hasData) {
+    return {
+      outcome: "answered",
+      readAt: input.at,
+      sentence:
+        "This page probed the surface and the read model answered it. Every number below is a reading taken at the time shown.",
+    };
+  }
+  return {
+    outcome: "reading",
+    readAt: null,
+    sentence:
+      "This page has not yet observed an outcome from the surface, so it makes no claim about it.",
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Live

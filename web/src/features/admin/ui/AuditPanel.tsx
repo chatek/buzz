@@ -23,7 +23,14 @@ import { toIdpFailure, type IdpSource } from "../idp-source";
 import type { IdpAuthEventsResponse, IdpSessionsResponse } from "../idp-types";
 import { useIdpSessions } from "../use-idp-admin";
 import { IdpClosedNotice } from "./IdpClosedNotice";
-import { Absent, Chip, Monospace, NumberCard, SectionNote } from "./idp-bits";
+import {
+  Absent,
+  Chip,
+  CountCard,
+  Monospace,
+  NumberCard,
+  SectionNote,
+} from "./idp-bits";
 
 const OUTCOME_TONE: Record<string, string> = {
   ok: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
@@ -130,54 +137,62 @@ export function AuditPanel({
   return (
     <div className="space-y-5">
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report an in-scope attempt count"
           label="login attempts in scope"
-          value={data.totals.in_scope ?? 0}
+          value={data.totals.in_scope}
           note="every attempt recorded in this window, whatever its outcome"
           testId="audit-total"
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report a succeeded count"
           label="succeeded"
-          value={data.totals.ok ?? 0}
+          value={data.totals.ok}
           tone="border-emerald-500/40"
           note="successful and not banned"
           testId="audit-ok"
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report a failed count"
           label="failed"
-          value={data.totals.failed ?? 0}
+          value={data.totals.failed}
           tone="border-rose-500/40"
           note="the reason is not in this database; see the notice below"
           testId="audit-failed"
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report a banned count"
           label="banned"
-          value={data.totals.banned ?? 0}
+          value={data.totals.banned}
           tone="border-fuchsia-500/50"
           note="counted once, never also as a failure"
           testId="audit-banned"
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report an OIDC attempt count"
           label="through an OIDC callback"
-          value={data.totals.with_oidc_uri ?? 0}
+          value={data.totals.with_oidc_uri}
           note="the only rows an org-scoped caller can attribute to a client"
           testId="audit-oidc"
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report a resolved-name count"
           label="login names resolved to a uid"
-          value={data.totals.username_resolved ?? 0}
+          value={data.totals.username_resolved}
           note="the subject map keys on the bare uid; an address does not resolve here"
           testId="audit-resolved"
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report an unresolved-name count"
           label="login names not resolved"
-          value={data.totals.username_unresolved ?? 0}
+          value={data.totals.username_unresolved}
           note="reported, not hidden: resolving an address to a uid needs the directory"
           testId="audit-unresolved"
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report a distinct-name count"
           label="distinct names"
-          value={data.totals.usernames ?? 0}
+          value={data.totals.usernames}
           note="as typed, before any resolution"
           testId="audit-usernames"
         />
@@ -302,8 +317,13 @@ export function AuditPanel({
           {data.page.truncated
             ? `more rows exist (next cursor ${data.page.next_cursor})`
             : "this is the whole page"}
-          . Rows outside your scope: {data.out_of_scope.rows ?? 0} — counted,
-          never listed.
+          . Rows outside your scope:{" "}
+          {data.out_of_scope.rows === undefined ? (
+            <Absent reason="the payload did not report an out-of-scope row count" />
+          ) : (
+            `${data.out_of_scope.rows} — counted, never listed`
+          )}
+          .
         </SectionNote>
       </div>
 

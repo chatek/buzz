@@ -23,6 +23,7 @@
 
 import type {
   IdpAuthEventsResponse,
+  IdpConsentResponse,
   IdpClientsResponse,
   IdpConsentPopulations,
   IdpConsentSummaryResponse,
@@ -314,6 +315,114 @@ export type StagedFixture = {
 };
 
 // ---------------------------------------------------------------------------
+// Fixture 3 — a payload that OMITS counts, and fixture 4 — a legitimately empty page
+//
+// These two exist because lane 2 proved the STRUCTURE and the pure layer of the
+// absence handling but could not prove the BRANCHING, calling the state
+// "half-proven" (`.prime/handoff/verify-lane/closed-state/`). Both are the states
+// this console WILL meet while `/api/idp/*` is mounted progressively: a payload that
+// does not carry a field yet, and a filter that legitimately matches nothing. No
+// number in either capture is measured; each is a shape, not a reading.
+// ---------------------------------------------------------------------------
+
+/** Counts deliberately ABSENT: the keys are simply not in the object. */
+const partialConsentPayload: IdpConsentResponse = {
+  ...liveConsentPayload,
+  // `in_scope`, `responded`, `answered`, `subjects` and `clients` are NOT here:
+  // not one count in this object except `pending`.
+  totals: { pending: 46 },
+  // The out-of-scope count is not here either.
+  out_of_scope: {},
+  rows: liveConsentPayload.rows.slice(0, 2),
+};
+
+const partialClientsPayload: IdpClientsResponse = {
+  ...liveClientsPayload,
+  // `total`, `owned` and `visible_unowned` are NOT here.
+  counts: { visible: 9, out_of_scope: 0 },
+};
+
+const partialAuthPayload: IdpAuthEventsResponse = {
+  ...liveAuthPayload,
+  // Every audit count except the in-scope total is NOT here.
+  totals: { in_scope: 346 },
+  out_of_scope: {},
+};
+
+const partialHealthPayload: IdpHealthResponse = {
+  ...liveHealthPayload,
+  // The caller-scoped inventory numbers are NOT here.
+  clients: { source: liveHealthPayload.clients.source },
+};
+
+/** A filter that legitimately matches nothing, with the counts that report it. */
+const emptyConsentPayload: IdpConsentResponse = {
+  ...liveConsentPayload,
+  totals: {
+    in_scope: 0,
+    responded: 0,
+    pending: 0,
+    answered: 0,
+    subjects: 0,
+    clients: 8,
+  },
+  populations: {
+    auto_admitted: 0,
+    approved: 0,
+    partial: 0,
+    refused: 0,
+    pending: 0,
+    inconsistent: 0,
+  },
+  states: statesOf({
+    auto_admitted: 0,
+    approved: 0,
+    partial: 0,
+    refused: 0,
+    pending: 0,
+    inconsistent: 0,
+  }),
+  page: {
+    limit: 25,
+    returned: 0,
+    next_cursor: "",
+    truncated: false,
+    order: "id descending (keyset)",
+  },
+  rows: [],
+};
+
+const PARTIAL_FIXTURE: StagedFixture = {
+  id: "partial-payload",
+  label: "A payload that omits counts",
+  captureNote:
+    "a SYNTHETIC capture whose `totals` object deliberately omits `responded`, `answered`, `subjects` and `clients`, whose `out_of_scope` omits `rows`, and whose client `counts` omit the total. Nothing here was measured: it is the shape a progressively mounted endpoint produces, and the console must render the absence rather than a zero.",
+  payloads: {
+    [IDP_PATHS.clients]: partialClientsPayload,
+    [idpConsentPath()]: partialConsentPayload,
+    [idpConsentSummaryPath()]: liveSummaryPayload,
+    [idpAuthEventsPath()]: partialAuthPayload,
+    [IDP_PATHS.sessionsSummary]: liveSessionsPayload,
+    [IDP_PATHS.health]: partialHealthPayload,
+  },
+};
+
+const EMPTY_FIXTURE: StagedFixture = {
+  id: "empty-page",
+  label: "A filter that legitimately matches nothing",
+  captureNote:
+    "a SYNTHETIC capture of an empty page: zero rows, zeroed populations and a full set of counts that report the zero. It is the state that must NOT read as an empty table, because an empty page and an empty population are different facts.",
+  payloads: {
+    [IDP_PATHS.clients]: liveClientsPayload,
+    [idpConsentPath()]: emptyConsentPayload,
+    [idpConsentSummaryPath()]: liveSummaryPayload,
+    [idpAuthEventsPath()]: liveAuthPayload,
+    [IDP_PATHS.sessionsSummary]: liveSessionsPayload,
+    [IDP_PATHS.health]: liveHealthPayload,
+  },
+};
+
+// ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
 
@@ -351,13 +460,19 @@ const ALTERNATE_FIXTURE: StagedFixture = {
 const FIXTURES: Record<string, StagedFixture> = {
   [LIVE_FIXTURE.id]: LIVE_FIXTURE,
   [ALTERNATE_FIXTURE.id]: ALTERNATE_FIXTURE,
+  [PARTIAL_FIXTURE.id]: PARTIAL_FIXTURE,
+  [EMPTY_FIXTURE.id]: EMPTY_FIXTURE,
   live: LIVE_FIXTURE,
   alternate: ALTERNATE_FIXTURE,
+  partial: PARTIAL_FIXTURE,
+  empty: EMPTY_FIXTURE,
 };
 
 export const STAGED_FIXTURE_IDS = [
   LIVE_FIXTURE.id,
   ALTERNATE_FIXTURE.id,
+  PARTIAL_FIXTURE.id,
+  EMPTY_FIXTURE.id,
 ] as const;
 
 export const DEFAULT_STAGED_FIXTURE_ID = LIVE_FIXTURE.id;

@@ -25,7 +25,14 @@ import {
   consentConsistency,
   presentationOf,
 } from "../consent-classification";
-import { Absent, Chip, Monospace, NumberCard, SectionNote } from "./idp-bits";
+import {
+  Absent,
+  Chip,
+  CountCard,
+  Monospace,
+  NumberCard,
+  SectionNote,
+} from "./idp-bits";
 
 const FILTER_OPTIONS: Array<{ value: string; label: string }> = [
   {
@@ -110,11 +117,12 @@ export function ConsentPanel({
       </div>
 
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report an in-scope row total, so no row count is shown"
           label="rows in the grant log (in scope)"
-          value={data.totals.in_scope ?? populations.inconsistent}
           note="every row of the log in this window — a row count, not a count of decisions"
           testId="consent-total-rows"
+          value={data.totals.in_scope}
         />
         <NumberCard
           label="real user answers"
@@ -123,11 +131,12 @@ export function ConsentPanel({
           note="approved + partly approved + refused. Not the row count, and not a count of rows the service wrote a decision column for."
           testId="consent-answered"
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report a responded count"
           label="rows with a response timestamp"
-          value={data.totals.responded ?? 0}
           note="includes the automatic admissions, where a timestamp was written and no human acted"
           testId="consent-responded"
+          value={data.totals.responded}
         />
         <NumberCard
           label="rows with no response timestamp"
@@ -136,17 +145,19 @@ export function ConsentPanel({
           note="shown as the service counts it: every row with no response recorded, which includes an unclassifiable row when one exists. An abandoned login is not a refusal."
           testId="consent-pending"
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report a distinct-subject count"
           label="people (distinct subjects)"
-          value={data.totals.subjects ?? 0}
           note="opaque subjects, not login names"
           testId="consent-subjects"
+          value={data.totals.subjects}
         />
-        <NumberCard
+        <CountCard
+          absentReason="the payload did not report a distinct-client count"
           label="clients present in the log"
-          value={data.totals.clients ?? 0}
           note="client ids with at least one row, which can include a client no longer in the inventory"
           testId="consent-clients"
+          value={data.totals.clients}
         />
       </div>
 
@@ -211,9 +222,23 @@ export function ConsentPanel({
         </div>
         <SectionNote className="mt-2">
           <span className="font-medium">
-            {answered} of {data.totals.in_scope ?? 0}
+            {answered}
+            {data.totals.in_scope === undefined
+              ? null
+              : ` of ${data.totals.in_scope}`}
           </span>{" "}
-          log rows in this filter set carry an answer from a person. The rest
+          {data.totals.in_scope === undefined ? (
+            <>
+              log rows in this filter set carry an answer from a person — the
+              payload did not report an in-scope row total, so no denominator is
+              shown rather than a made-up one.{" "}
+            </>
+          ) : (
+            <>
+              log rows in this filter set carry an answer from a person. The
+              rest{" "}
+            </>
+          )}
           were admitted automatically or never answered at all, and neither of
           those is a decision: reading the log row count as a count of decisions
           is exactly the misreport this view exists to prevent.
@@ -264,8 +289,12 @@ export function ConsentPanel({
               {data.window.default_days}-day default). {data.window.note ?? ""}
             </li>
             <li data-testid="consent-out-of-scope">
-              rows outside your scope: {data.out_of_scope.rows ?? 0} — counted,
-              never listed
+              rows outside your scope:{" "}
+              {data.out_of_scope.rows === undefined ? (
+                <Absent reason="the payload did not report an out-of-scope row count" />
+              ) : (
+                `${data.out_of_scope.rows} — counted, never listed`
+              )}
             </li>
             <li data-testid="consent-aged-out">
               rows inside your scope but outside the window:{" "}
@@ -403,9 +432,9 @@ export function ConsentPanel({
                       {row.preconfigured ? (
                         <div className="mt-1">
                           <Chip tone="border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300">
-                            pre-authorised row id {row.preconfiguration_id} —
-                            this is not consent and is never merged into a
-                            population
+                            pre-authorised (row {row.preconfiguration_id}) — a
+                            pre-authorisation is not an approval and is never
+                            merged into a population
                           </Chip>
                         </div>
                       ) : null}

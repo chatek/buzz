@@ -15,12 +15,17 @@
  * (`buzz-gateway/internal/admin/http.go`), and phase 2's write endpoints are not
  * implemented. Nothing on this page can change anything.
  *
- * TODAY EVERY LIVE READ IS REFUSED, and the page says so rather than looking
- * broken: the live gateway runs with a nil admission function and the endpoints
- * are not mounted yet. To see the views before admission lands, open the page
- * with a staged capture: `?fixture=live-2026-09-21` or
- * `?fixture=alternate-with-defect`. Both are labelled "staged data" on every
- * panel, and the banner names the capture.
+ * THE HEADER MAKES NO CLAIM ABOUT THE API'S STATE. It carries one line derived
+ * from THIS PAGE's own probe of the surface (`observedSurface`), with the time it
+ * was taken. It used to carry a sentence written when the file was written — "the
+ * endpoints are not mounted yet" — which a reviewer saw next to panels answering
+ * 401 against the deployed host. A sentence about the system goes stale; a report
+ * of what the page received does not.
+ *
+ * To see the views without depending on the live surface at all, open the page with
+ * a staged capture: `?fixture=live-2026-09-21`, `?fixture=alternate-with-defect`,
+ * `?fixture=partial-payload` or `?fixture=empty-page`. Every one is labelled
+ * "staged data" in each panel, and the banner names the capture.
  *
  * REACHING THIS PAGE. The route is registered in `src/app/routes.ts`, which has
  * a single writer (the lead): the one-line insertion this file needs is written
@@ -35,7 +40,11 @@ import { cn } from "@/shared/lib/cn";
 import { useSession } from "@/shared/lib/session";
 import { Badge } from "@/shared/ui/badge";
 
-import type { IdpFailure, IdpSource } from "../idp-source";
+import {
+  type IdpFailure,
+  type IdpSource,
+  observedSurface,
+} from "../idp-source";
 import type {
   IdpAuthEventsResponse,
   IdpClientsResponse,
@@ -49,6 +58,7 @@ import {
   useIdpClients,
   useIdpConsent,
   useIdpHealth,
+  useSurfaceProbe,
 } from "../use-idp-admin";
 import { AuditPanel } from "./AuditPanel";
 import { ClientsPanel } from "./ClientsPanel";
@@ -161,6 +171,7 @@ function CallerLine() {
 
 export function AdminConsolePage() {
   const { source, fixtureError, search } = useConsoleSource();
+  const probe = useSurfaceProbe(source);
   const [tab, setTab] = React.useState<TabId>(() =>
     isTabId(search.tab) ? search.tab : "consent",
   );
@@ -183,6 +194,18 @@ export function AdminConsolePage() {
   }
 
   const staged = source.kind === "staged";
+  // The probe is taken once per page load, through the same read seam the panels
+  // use, so the header cannot observe something a panel would not.
+  const observation = observedSurface({
+    kind: source.kind,
+    isPending: probe.isPending,
+    isError: probe.isError,
+    error: probe.error,
+    hasData: probe.data !== undefined,
+    at: probe.dataUpdatedAt
+      ? new Date(probe.dataUpdatedAt).toISOString()
+      : null,
+  });
 
   return (
     <div className="mx-auto w-full max-w-[110rem] px-4 py-6">
@@ -231,13 +254,34 @@ export function AdminConsolePage() {
         ) : (
           <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
             Every read below goes to the gateway through this app's existing
-            credential helper. Today that means a refusal: the live process
-            admits nobody and the endpoints are not mounted yet, so each panel
-            shows the specific reason instead of an empty table. Open this page
-            with <Monospace>?fixture={STAGED_FIXTURE_IDS[0]}</Monospace> to read
-            a recorded capture instead.
+            credential helper, and each panel reports the outcome of its own
+            read. Open this page with{" "}
+            <Monospace>?fixture={STAGED_FIXTURE_IDS[0]}</Monospace> to read a
+            recorded capture instead of the live surface.
           </p>
         )}
+        {/*
+          THE OBSERVED LINE, and the reason it exists: this header used to carry a
+          sentence written when the file was written — "the endpoints are not
+          mounted yet" — and a reviewer with a real browser saw it next to panels
+          answering 401. The page now describes what IT received, derived from its
+          own probe's outcome (`observedSurface` in `idp-source.ts`), with the time
+          it was taken. It makes no claim about the API's state.
+        */}
+        <p
+          className="mt-1 text-[11px] leading-4"
+          data-testid="surface-observation"
+          data-outcome={observation.outcome}
+        >
+          <span className="font-medium">This page observed:</span>{" "}
+          {observation.sentence}
+          {observation.readAt ? (
+            <span className="text-muted-foreground">
+              {" "}
+              ({observation.readAt})
+            </span>
+          ) : null}
+        </p>
       </div>
 
       <nav

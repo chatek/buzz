@@ -138,3 +138,16 @@ export function useIdpSessions(source: IdpSource | null) {
 export function useIdpHealth(source: IdpSource | null) {
   return useIdpRead<IdpHealthResponse>(source, IDP_PATHS.health);
 }
+
+/**
+ * THE SURFACE PROBE — one real read of the surface, used ONLY to derive the
+ * header's observation line.
+ *
+ * The header must not describe the API's state from memory; it describes this
+ * page's own read. The probe goes through the same seam, the same credential
+ * helper and the same `retry: false` policy as every panel, so the header cannot
+ * observe something a panel would not.
+ */
+export function useSurfaceProbe(source: IdpSource | null) {
+  return useIdpRead<IdpHealthResponse>(source, IDP_PATHS.health);
+}

@@ -32,6 +32,57 @@
 
 export type IdpCountMap = Record<string, number>;
 
+/**
+ * THE MAP-DERIVED COUNTS ARE OPTIONAL, AND THAT IS THE POINT.
+ *
+ * `totals`, `counts` and `out_of_scope` are Go `map[string]int` on the wire: a map
+ * cannot promise a key, so a payload that OMITS a field is a state this console can
+ * actually meet — and lane 2 proved it was rendering `0` for exactly those fields,
+ * which asserts a fact the console never observed. Typing the known keys as
+ * optional makes the compiler force every call site to decide what to show when the
+ * key is absent. The rule at the call site is: a NUMBER, or an `<Absent>` reason —
+ * never a zero and never a different quantity under the same label.
+ *
+ * Fields that come from a Go STRUCT (populations, window, page, schema_guard, the
+ * client/projection fields) stay REQUIRED: the service defines them, so the type
+ * says so.
+ */
+export type IdpConsentTotals = {
+  in_scope?: number;
+  responded?: number;
+  pending?: number;
+  answered?: number;
+  subjects?: number;
+  clients?: number;
+};
+
+export type IdpAuthEventTotals = {
+  in_scope?: number;
+  ok?: number;
+  failed?: number;
+  banned?: number;
+  username_resolved?: number;
+  username_unresolved?: number;
+  with_oidc_uri?: number;
+  client_id_parsed?: number;
+  client_id_unparsed?: number;
+  usernames?: number;
+  remote_ips?: number;
+};
+
+export type IdpClientCounts = {
+  total?: number;
+  visible?: number;
+  out_of_scope?: number;
+  owned?: number;
+  visible_unowned?: number;
+};
+
+/** Out-of-scope data appears as a COUNT, and that count is a map key too. */
+export type IdpOutOfScope = {
+  rows?: number;
+};
+
 /** The error body: `{"error": "...", "detail": "..."}` (`http.go` fail/readErr). */
 export type IdpErrorBody = {
   error?: string;
@@ -108,7 +159,7 @@ export type IdpClientsResponse = {
   as_of: string;
   source: IdpClientSourceInfo;
   org_scope: IdpOrgScope;
-  counts: IdpCountMap;
+  counts: IdpClientCounts;
   clients: IdpClientView[];
 };
 
@@ -180,8 +231,8 @@ export type IdpConsentResponse = {
   state_filter: string;
   populations: IdpConsentPopulations;
   states: IdpStateCount[];
-  totals: IdpCountMap;
-  out_of_scope: IdpCountMap;
+  totals: IdpConsentTotals;
+  out_of_scope: IdpOutOfScope;
   page: IdpPage;
   audit: IdpAccessAudit;
   rows: IdpConsentRow[];
@@ -192,7 +243,7 @@ export type IdpGroupView = {
   org?: string;
   populations: IdpConsentPopulations;
   states: IdpStateCount[];
-  totals: IdpCountMap;
+  totals: IdpConsentTotals;
 };
 
 export type IdpConsentSummaryResponse = {
@@ -202,8 +253,8 @@ export type IdpConsentSummaryResponse = {
   group_by: string;
   populations: IdpConsentPopulations;
   states: IdpStateCount[];
-  totals: IdpCountMap;
-  out_of_scope: IdpCountMap;
+  totals: IdpConsentTotals;
+  out_of_scope: IdpOutOfScope;
   by_client: IdpGroupView[];
   by_day: IdpGroupView[];
   audit: IdpAccessAudit;
@@ -232,8 +283,8 @@ export type IdpAuthEventsResponse = {
   window: IdpWindow;
   org_scope: IdpOrgScope;
   outcome_filter: string;
-  totals: IdpCountMap;
-  out_of_scope: IdpCountMap;
+  totals: IdpAuthEventTotals;
+  out_of_scope: IdpOutOfScope;
   page: IdpPage;
   audit: IdpAccessAudit;
   /** The server's own sentence about why no row carries a denial reason. */

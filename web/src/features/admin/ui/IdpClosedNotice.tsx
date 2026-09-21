@@ -1,12 +1,23 @@
 /**
  * THE FAIL-CLOSED NOTICE — what the console shows when a read is refused.
  *
- * This is the acceptance-critical component of phase 1. The live gateway runs
- * with a nil admission function (`internal/api/auth_nip98.go:129`) and the
- * endpoints are not mounted yet, so EVERY `/api/idp/*` read is refused today:
- * 401 from admission, 501 from the gateway's unimplemented-lane fallback, or
- * HTML from a static host answering the API path. Each of those is a different
- * fact and gets its own sentence.
+ * This is the acceptance-critical component of phase 1. WHAT IS OBSERVED TODAY,
+ * and it is an observation with a date rather than a description of the
+ * mechanism: MEASURED 2026-09-22, the route serves and EVERY `/api/idp/*` read is
+ * refused AT ADMISSION with `401 restricted: missing Authorization` — including a
+ * path that does not exist, which shows the whole subtree is guarded before the
+ * dispatcher is reached. No read reaches the read model.
+ *
+ * The three refusal shapes this component must handle are therefore: 401 at
+ * admission (the state above), 501 if nothing is mounted at the path (the
+ * gateway's own unimplemented-lane answer), and HTML in place of JSON when a
+ * static host answers the API path. Each is a different fact and gets its own
+ * sentence.
+ *
+ * FOR THE RECORD, and not as a current claim: when this component was written the
+ * mount patch had not been applied, so 501 was expected to be the common shape.
+ * That is no longer the state, and the 501 branch stays because "nothing is
+ * mounted" is a state any deployment can be in again.
  *
  * What this component must NEVER do, and does not:
  *   - keep a spinner running (the read has a deadline; a failure is a failure);
@@ -26,7 +37,7 @@ import { Monospace } from "./idp-bits";
 /** Per-kind subordinate line: what to do, or what the state would look like if it changed. */
 const NEXT_STEP: Record<IdpFailureKind, string> = {
   not_authorized:
-    "Nothing was returned and nothing was withheld: the caller was refused at the door. This is the expected state until a principal registry exists.",
+    "Nothing was returned and nothing was withheld: the caller was refused at the door. This notice describes the refusal this read received; it makes no claim about whether the endpoint exists beyond that.",
   restricted:
     "Nothing was returned. Ask the operator to add the client to an organization you belong to, or to give you the admin group for it.",
   not_found:

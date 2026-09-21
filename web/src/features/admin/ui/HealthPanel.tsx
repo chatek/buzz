@@ -237,13 +237,25 @@ export function HealthPanel({ data }: { data: IdpHealthResponse }) {
               )}
             </Kv>
             <Kv label="clients in the projection">
-              {data.clients.live_count ?? 0}
+              {data.clients.live_count === undefined ? (
+                <Absent reason="the payload did not report an inventory size" />
+              ) : (
+                data.clients.live_count
+              )}
             </Kv>
             <Kv label="visible to this caller">
-              {data.clients.visible_to_caller ?? 0}
+              {data.clients.visible_to_caller === undefined ? (
+                <Absent reason="the payload did not report a visible count" />
+              ) : (
+                data.clients.visible_to_caller
+              )}
             </Kv>
             <Kv label="outside this caller's scope">
-              {data.clients.out_of_scope ?? 0}
+              {data.clients.out_of_scope === undefined ? (
+                <Absent reason="the payload did not report an out-of-scope count" />
+              ) : (
+                data.clients.out_of_scope
+              )}
             </Kv>
             <Kv label="ownership registry">
               {data.clients.ownership_registry ?? (
