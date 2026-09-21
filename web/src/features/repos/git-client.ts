@@ -23,7 +23,7 @@ import {
   resolveRef,
 } from "isomorphic-git";
 import http from "isomorphic-git/http/web";
-import { makeNip98AuthHeader } from "@/shared/lib/nip98";
+import { buildRelayAuthHeaders } from "@/shared/lib/relay-auth";
 import { relayHttpBaseUrl } from "@/shared/lib/relay-url";
 
 /** Get a repo-specific LightningFS instance backed by IndexedDB. */
@@ -53,12 +53,12 @@ async function authHeaders(
   owner: string,
   repoName: string,
 ): Promise<Record<string, string>> {
-  return {
-    Authorization: await makeNip98AuthHeader(
-      repoAuthUrl(owner, repoName),
-      "GET",
-    ),
-  };
+  // Credential seam: NIP-98 today, unchanged; the OIDC bearer form is dormant
+  // until the gateway can verify it — see shared/lib/relay-auth.ts.
+  return buildRelayAuthHeaders({
+    url: repoAuthUrl(owner, repoName),
+    method: "GET",
+  });
 }
 
 /**

@@ -2,6 +2,102 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 
+import {
+  AUTHELIA_AUTHORIZATION_PATH,
+  buildAuthorizationUrl,
+  OIDC_LOGIN_PATH,
+  pkceChallenge,
+  randomUrlSafe,
+  resolveOidcConfig,
+} from "./src/shared/lib/oidc-config";
+
+/**
+ * DEV/PREVIEW ONLY: answer `GET /login` with a real HTTP 302 to the vclaw
+ * IdP's authorization endpoint.
+ *
+ * Why this exists: the app is a static SPA, so a client-side route can only
+ * redirect by script — there is no HTTP 302 to inspect with curl or a test.
+ * This middleware produces exactly the URL the browser flow produces, through
+ * the same `buildAuthorizationUrl` helper, so the parameter set can be checked
+ * without a browser.
+ *
+ * It is NOT part of the production build (nginx serves /login from the SPA
+ * fallback and the browser performs the identical redirect), and it never
+ * answers a browser navigation: a request that accepts HTML falls through to
+ * the SPA, which is the only place that can hold the PKCE verifier this
+ * redirect's `code_challenge` would need to complete. If an HTTP-level 302 is
+ * wanted in production too, the nginx equivalent is one line:
+ *   location = /login { return 302 "<the URL this middleware prints>"; }
+ */
+function oidcLoginRedirect() {
+  const install = (middlewares: {
+    use: (
+      handler: (
+        req: {
+          method?: string;
+          url?: string;
+          headers: Record<string, string | string[] | undefined>;
+          socket?: { encrypted?: boolean };
+        },
+        res: {
+          statusCode: number;
+          setHeader(name: string, value: string): void;
+          end(body?: string): void;
+        },
+        next: () => void,
+      ) => void,
+    ) => void;
+  }) => {
+    middlewares.use((req, res, next) => {
+      const path = (req.url ?? "").split("?")[0];
+      if (req.method !== "GET" || path !== OIDC_LOGIN_PATH) {
+        next();
+        return;
+      }
+      const accept = req.headers.accept;
+      if (typeof accept === "string" && accept.includes("text/html")) {
+        next();
+        return;
+      }
+      const forwardedProto = req.headers["x-forwarded-proto"];
+      const proto =
+        typeof forwardedProto === "string"
+          ? forwardedProto
+          : req.socket?.encrypted
+            ? "https"
+            : "http";
+      const host = req.headers.host;
+      const origin = `${proto}://${typeof host === "string" ? host : "localhost"}`;
+      const config = resolveOidcConfig(process.env, origin);
+      void (async () => {
+        const url = buildAuthorizationUrl({
+          config,
+          authorizationEndpoint: `${config.issuer}${AUTHELIA_AUTHORIZATION_PATH}`,
+          state: randomUrlSafe(32),
+          nonce: randomUrlSafe(32),
+          codeChallenge: await pkceChallenge(randomUrlSafe(64)),
+        });
+        res.statusCode = 302;
+        res.setHeader("Location", url);
+        res.setHeader("Cache-Control", "no-store");
+        res.end();
+      })();
+    });
+  };
+
+  return {
+    name: "buzz-oidc-login-redirect",
+    configureServer(server: { middlewares: Parameters<typeof install>[0] }) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server: {
+      middlewares: Parameters<typeof install>[0];
+    }) {
+      install(server.middlewares);
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -17,6 +113,7 @@ export default defineConfig({
       ],
     }),
     react(),
+    oidcLoginRedirect(),
   ],
   resolve: {
     alias: {

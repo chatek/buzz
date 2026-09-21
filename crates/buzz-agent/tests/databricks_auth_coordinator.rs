@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::extract::Form;
 use axum::{routing::get, routing::post, Json, Router};
 use buzz_agent::auth::{
-    AuthError, AuthIntent, BrowserOpener, PkceOAuthConfig, PkceOAuthTokenSource,
+    AuthError, AuthIntent, BrowserOpener, PkceLoopbackConfig, PkceOAuthConfig, PkceOAuthTokenSource,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -56,6 +56,10 @@ enum Script {
 struct ScriptedOpener {
     script: Script,
     calls: Arc<AtomicU64>,
+    /// Every `redirect_uri` the engine registered, in order. Databricks callers
+    /// don't read it; the loopback-shape test asserts the host/path the engine
+    /// actually sent (a provider matches those literally).
+    redirects: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl ScriptedOpener {
@@ -63,11 +67,16 @@ impl ScriptedOpener {
         Self {
             script,
             calls: Arc::new(AtomicU64::new(0)),
+            redirects: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
     fn call_count(&self) -> u64 {
         self.calls.load(Ordering::SeqCst)
+    }
+
+    fn last_redirect(&self) -> Option<String> {
+        self.redirects.lock().unwrap().last().cloned()
     }
 }
 
@@ -94,12 +103,17 @@ impl BrowserOpener for ScriptedOpener {
             .map(|(_, v)| v.into_owned())
             .expect("authorize URL carries state");
         let redirect = url::Url::parse(&redirect).expect("redirect_uri must parse");
+        self.redirects.lock().unwrap().push(redirect.to_string());
         // The coordinator's listener binds 127.0.0.1; connect there directly so
         // the callback can't land on an IPv6 `localhost` (::1) with no listener.
         let port = redirect.port().expect("loopback redirect carries a port");
-        // `state` is base64url (no reserved characters), safe to inline.
+        // Dial the redirect's *own* path: the listener serves whatever path the
+        // provider matches, which is `/` for the Databricks default and
+        // `/callback` for a path-literal provider. `state` is base64url (no
+        // reserved characters), safe to inline.
+        let path = redirect.path();
         let request = format!(
-            "GET /?{query}&state={state} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+            "GET {path}?{query}&state={state} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
         );
         std::thread::spawn(move || {
             // A real browser holds the connection open until the callback page
@@ -3407,4 +3421,114 @@ async fn test_non_unix_does_not_serve_legacy_on_disk_token() {
             "non-Unix: no new cache file created (memory-only)"
         );
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_loopback_redirect_honors_configured_host_and_path() {
+    // The vclaw IDP (Authelia) matches the redirect *host string* and *path*
+    // literally and only the port is loose, so the engine must send
+    // `http://127.0.0.1:<ephemeral>/callback` and its listener must serve
+    // `/callback`. A `localhost` host or a root path is rejected by that
+    // provider (400 invalid_request), and a listener bound to the wrong path
+    // never receives the code. Databricks keeps the default shape, which is why
+    // this is a config knob rather than a constant.
+    let stub = spawn_stub(false).await;
+    let cache = TempDir::new().unwrap();
+    let opener = ScriptedOpener::new(Script::Approve);
+    let cfg = config(&stub, "/disco/a", cache.path());
+
+    let source = PkceOAuthTokenSource::new_with_loopback(
+        cfg,
+        Arc::new(opener.clone()),
+        PkceLoopbackConfig::new("127.0.0.1", "/callback", Duration::from_secs(10)),
+    )
+    .unwrap();
+
+    source
+        .interactive_login()
+        .await
+        .expect("the browser flow completes through the /callback listener");
+
+    let redirect = opener
+        .last_redirect()
+        .expect("the opener was handed a redirect_uri");
+    let parsed = url::Url::parse(&redirect).expect("redirect_uri parses");
+    assert_eq!(
+        parsed.host_str(),
+        Some("127.0.0.1"),
+        "host is the literal loopback IP: {redirect}"
+    );
+    assert_eq!(
+        parsed.path(),
+        "/callback",
+        "path matches the registered redirect: {redirect}"
+    );
+    assert!(
+        parsed.port().is_some(),
+        "the port is chosen at runtime (:0): {redirect}"
+    );
+    assert_eq!(
+        stub.code_grants.load(Ordering::SeqCst),
+        1,
+        "the redirect to /callback delivered the code and the exchange succeeded"
+    );
+}
+
+/// The default loopback shape is unchanged for Databricks: `localhost` plus the
+/// bare-authority redirect (`http://localhost:<port>`, no trailing slash) and
+/// the root callback path.
+#[test]
+fn test_default_loopback_shape_preserves_databricks_registration() {
+    let default = PkceLoopbackConfig::default();
+    assert_eq!(default.uri_for_port(8080), "http://localhost:8080");
+    assert_eq!(default.prompt_timeout, Duration::from_secs(60));
+    assert_eq!(
+        PkceLoopbackConfig::new("127.0.0.1", "/callback", Duration::from_secs(120)).uri_for_port(1),
+        "http://127.0.0.1:1/callback"
+    );
+}
+
+/// Signing out drops the locally cached credential.
+///
+/// The vclaw IDP advertises no `end_session_endpoint`, so there is no
+/// server-side session a client could end: the cached token *is* the
+/// credential, and removing it is the whole client-side logout. The in-memory
+/// cell must go too — otherwise a still-fresh in-memory token would survive and
+/// the next `Headless` acquisition would hand it back.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_sign_out_removes_cached_tokens_and_is_idempotent() {
+    let stub = spawn_stub(false).await;
+    let cache = TempDir::new().unwrap();
+    let opener = ScriptedOpener::new(Script::Approve);
+    let cfg = config(&stub, "/disco/a", cache.path());
+    seed_cache(
+        &cfg,
+        cache.path(),
+        json!({
+            "access_token": "cached",
+            "refresh_token": "cached-refresh",
+            "expires_at": future_secs(),
+        }),
+    );
+    let path = cache_file_path(&cfg, cache.path());
+    assert!(path.exists(), "precondition: a token file is cached");
+
+    let source = PkceOAuthTokenSource::new_with(cfg, Arc::new(opener.clone())).unwrap();
+    assert!(
+        source.sign_out().await.unwrap(),
+        "sign-out removed the cached token file"
+    );
+    assert!(!path.exists(), "no token file survives sign-out");
+    assert_eq!(
+        source.acquire_with_intent(AuthIntent::Headless, None).await,
+        Err(AuthError::NoCredential),
+        "the in-memory cell is cleared, so a headless acquisition finds no credential"
+    );
+    assert!(
+        !source.sign_out().await.unwrap(),
+        "a second sign-out is a no-op, not an error"
+    );
+    assert_eq!(opener.call_count(), 0, "sign-out never opens a browser");
 }

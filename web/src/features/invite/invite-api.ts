@@ -1,4 +1,4 @@
-import { makeNip98AuthHeader } from "@/shared/lib/nip98";
+import { buildRelayAuthHeaders } from "@/shared/lib/relay-auth";
 import { relayHttpBaseUrl } from "@/shared/lib/relay-url";
 
 const INVITE_REQUEST_TIMEOUT_MS = 15_000;
@@ -19,14 +19,18 @@ export async function claimInviteInBrowser(
     code,
     policy_receipt: policyReceipt,
   });
-  const authorization = await makeNip98AuthHeader(url, "POST", {
+  // The credential seam: NIP-98 today (unchanged), an OIDC bearer token only
+  // when the gateway can verify it — see shared/lib/relay-auth.ts.
+  const authHeaders = await buildRelayAuthHeaders({
+    url,
+    method: "POST",
     body,
     requireNip07: true,
   });
   const response = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: authorization,
+      ...authHeaders,
       "Content-Type": "application/json",
     },
     body,

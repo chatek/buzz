@@ -18,7 +18,8 @@ export default defineConfig({
   projects: [
     {
       name: "smoke",
-      testMatch: ["**/smoke.spec.ts"],
+      // smoke.spec.ts (app surface) + oidc.spec.ts (sign-in surface).
+      testMatch: ["**/*.spec.ts"],
       use: {
         ...devices["Desktop Chrome"],
       },

@@ -324,6 +324,83 @@ pub struct PkceOAuthConfig {
     pub cache_dir_override: Option<PathBuf>,
 }
 
+/// Shape of the loopback redirect the interactive browser flow binds and hands
+/// to the provider.
+///
+/// RFC 8252 §7.3 lets a native app pick a free port at runtime, but the *host
+/// string* and the *path* are matched by the provider against what was
+/// registered. Two providers in this repo disagree about both, so each is an
+/// explicit knob:
+///
+/// - Databricks ([`default`](Self::default)): `http://localhost:<port>` — the
+///   form the registered Databricks redirect expects. Changing it breaks that
+///   sign-in, so it stays the default.
+/// - The vclaw IDP (Authelia v4.38): `http://127.0.0.1:<port>/callback`.
+///   MEASURED 2026-09-20 against `https://auth.vclawhub.com`: an *unregistered*
+///   port on `127.0.0.1` is accepted (302 to login), the same request with the
+///   host `localhost` is rejected (400 `invalid_request`), and a different path
+///   is rejected — so the host must be the literal loopback IP and the path
+///   must be the registered one. The provider matches `127.0.0.1` ports
+///   loosely, which is what makes a `:0` ephemeral-port flow work with a single
+///   registered loopback redirect.
+#[derive(Debug, Clone)]
+pub struct PkceLoopbackConfig {
+    /// Host component of the redirect URI. `localhost` and `127.0.0.1` are not
+    /// interchangeable to a literal-matching provider.
+    pub host: String,
+    /// Path component of the redirect URI. `/` means the root path and renders
+    /// as the bare authority (`http://localhost:<port>`), preserving the
+    /// Databricks registration byte-for-byte.
+    pub path: String,
+    /// How long to wait for the user to finish in the browser. A flow with a
+    /// password prompt and a second factor needs longer than
+    /// [`BROWSER_AUTH_TIMEOUT`]. The outer [`AUTH_ATTEMPT_DEADLINE`] still caps
+    /// the whole locked attempt, so a longer value only spends budget that
+    /// would otherwise go unused.
+    pub prompt_timeout: Duration,
+}
+
+impl Default for PkceLoopbackConfig {
+    fn default() -> Self {
+        Self {
+            host: "localhost".into(),
+            path: "/".into(),
+            prompt_timeout: BROWSER_AUTH_TIMEOUT,
+        }
+    }
+}
+
+impl PkceLoopbackConfig {
+    pub fn new(host: impl Into<String>, path: impl Into<String>, prompt_timeout: Duration) -> Self {
+        Self {
+            host: host.into(),
+            path: path.into(),
+            prompt_timeout,
+        }
+    }
+
+    /// The redirect URI for `port`, in the exact form the provider matches —
+    /// the same string that goes into the authorize query and the code
+    /// exchange.
+    pub fn uri_for_port(&self, port: u16) -> String {
+        let path = if self.path == "/" {
+            ""
+        } else {
+            self.path.as_str()
+        };
+        format!("http://{}:{port}{path}", self.host)
+    }
+
+    /// The axum route path the callback listener serves.
+    fn route_path(&self) -> &str {
+        if self.path.is_empty() {
+            "/"
+        } else {
+            self.path.as_str()
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct CachedToken {
     access_token: String,
@@ -372,6 +449,10 @@ pub struct PkceOAuthTokenSource {
     http: Client,
     workspace: Option<StrictWorkspace>,
     cache_path: PathBuf,
+    /// Loopback callback shape (host, path, prompt budget) that the interactive
+    /// flow binds and registers. Defaults to the Databricks registration;
+    /// the vclaw IDP needs [`PkceLoopbackConfig::new`] with `127.0.0.1`.
+    loopback: PkceLoopbackConfig,
     /// Injected browser launcher, called inside [`browser_pkce_flow`] while the
     /// localhost listener is live. Production uses [`DefaultBrowserOpener`];
     /// Phase 2 supplies the Tauri opener.
@@ -418,7 +499,26 @@ impl PkceOAuthTokenSource {
             .timeout(http_timeout)
             .build()
             .map_err(|_| AgentError::Llm("oauth http client construction failed".into()))?;
-        Self::from_parts(cfg, opener, http, None)
+        Self::from_parts(cfg, opener, http, None, PkceLoopbackConfig::default())
+    }
+
+    /// Construct with an injected opener and an explicit loopback callback
+    /// shape.
+    ///
+    /// Every existing caller keeps [`new`](Self::new)'s Databricks registration
+    /// (`localhost`, root path, [`BROWSER_AUTH_TIMEOUT`]); a provider that
+    /// matches the redirect host and path literally — the vclaw IDP — passes
+    /// its own [`PkceLoopbackConfig`] here instead.
+    pub fn new_with_loopback(
+        cfg: PkceOAuthConfig,
+        opener: Arc<dyn BrowserOpener>,
+        loopback: PkceLoopbackConfig,
+    ) -> Result<Arc<Self>, AgentError> {
+        let http = Client::builder()
+            .timeout(HTTP_REQUEST_TIMEOUT)
+            .build()
+            .map_err(|_| AgentError::Llm("oauth http client construction failed".into()))?;
+        Self::from_parts(cfg, opener, http, None, loopback)
     }
 
     pub(crate) fn for_workspace(
@@ -432,7 +532,13 @@ impl PkceOAuthTokenSource {
         // Strict and legacy sources must not share single-flight/cache state,
         // even if a caller accidentally supplies the same root to both APIs.
         cfg.cache_namespace = "databricks-strict".into();
-        Self::from_parts(cfg, opener, http, Some(workspace))
+        Self::from_parts(
+            cfg,
+            opener,
+            http,
+            Some(workspace),
+            PkceLoopbackConfig::default(),
+        )
     }
 
     fn from_parts(
@@ -440,6 +546,7 @@ impl PkceOAuthTokenSource {
         opener: Arc<dyn BrowserOpener>,
         http: Client,
         workspace: Option<StrictWorkspace>,
+        loopback: PkceLoopbackConfig,
     ) -> Result<Arc<Self>, AgentError> {
         let cache_path = cache_path_for(&cfg)?;
         if let Some(parent) = cache_path.parent() {
@@ -452,6 +559,7 @@ impl PkceOAuthTokenSource {
             http,
             workspace,
             cache_path,
+            loopback,
             opener,
             state: Mutex::new(initial),
         }))
@@ -748,6 +856,40 @@ impl PkceOAuthTokenSource {
     pub async fn interactive_login(&self) -> Result<(), AgentError> {
         self.acquire(AuthIntent::UserInitiated, None).await?;
         Ok(())
+    }
+
+    /// Drop this provider's locally cached tokens (sign out).
+    ///
+    /// This is the whole client-side logout for a provider that advertises no
+    /// `end_session_endpoint` — the vclaw IDP does not — because there is no
+    /// server-side session the client can end: the cached refresh/access token
+    /// *is* the credential. Removes the token file plus the cooldown and attempt
+    /// sidecars and clears the in-memory cell, so the next
+    /// [`bearer`](TokenSource::bearer) runs the full browser flow again.
+    ///
+    /// Returns whether a cached token file existed. The cross-process advisory
+    /// lock is deliberately *not* taken, and the lock file is deliberately *not*
+    /// removed: unlinking a lock file another process still holds an fd on lets
+    /// a third process create a fresh one and become a second holder for the
+    /// same key. A concurrent sibling acquisition may therefore rewrite the
+    /// cache right after this returns; signing out again is the remedy.
+    pub async fn sign_out(&self) -> Result<bool, AgentError> {
+        let mut state = self.state.lock().await;
+        let removed = match fs::remove_file(&self.cache_path) {
+            Ok(()) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(AgentError::Llm(format!(
+                    "oauth cache remove {:?}: {error}",
+                    self.cache_path
+                )))
+            }
+        };
+        for sidecar in [self.cooldown_path(), self.attempt_path()] {
+            let _ = fs::remove_file(sidecar);
+        }
+        *state = None;
+        Ok(removed)
     }
 
     /// Public entry for passive Desktop discovery and the saved-model picker
@@ -1235,7 +1377,13 @@ impl PkceOAuthTokenSource {
         // writer arm below instead of being dropped by a cancel that would
         // release the lock without recording the cooldown.
         let remaining = attempt_deadline.saturating_duration_since(std::time::Instant::now());
-        let flow = browser_pkce_flow(&self.http, &self.cfg, eps, self.opener.as_ref());
+        let flow = browser_pkce_flow(
+            &self.http,
+            &self.cfg,
+            eps,
+            self.opener.as_ref(),
+            &self.loopback,
+        );
         let outcome = match tokio::time::timeout(remaining, flow).await {
             Ok(result) => result,
             Err(_) => Err(AuthError::TimedOut),
@@ -2055,6 +2203,11 @@ fn sanitize_callback_detail(raw: &str) -> String {
 /// wait up to [`BROWSER_AUTH_TIMEOUT`] for the redirect, then exchange the
 /// code for a token.
 ///
+/// `loopback` supplies the redirect host, path, and prompt budget: the
+/// listener serves `loopback.path` and the redirect URI is built from
+/// `loopback.host` + the bound port, because providers match those two parts
+/// literally (see [`PkceLoopbackConfig`]).
+///
 /// `opener` is invoked *after* the listener is bound and the abort guard is
 /// armed, so a launch failure never returns a URL pointing at a torn-down
 /// listener. Every failure is a typed [`AuthError`] so the coordinator can
@@ -2075,6 +2228,7 @@ async fn browser_pkce_flow(
     cfg: &PkceOAuthConfig,
     endpoints: &OidcEndpoints,
     opener: &dyn BrowserOpener,
+    loopback: &PkceLoopbackConfig,
 ) -> Result<CachedToken, AuthError> {
     use axum::{extract::Query, response::Html, routing::get, Router};
     use std::collections::HashMap;
@@ -2089,7 +2243,7 @@ async fn browser_pkce_flow(
 
     let expected_state = state.clone();
     let app = Router::new().route(
-        "/",
+        loopback.route_path(),
         get(move |Query(params): Query<HashMap<String, String>>| {
             let tx = Arc::clone(&tx);
             let expected = expected_state.clone();
@@ -2110,7 +2264,7 @@ async fn browser_pkce_flow(
         .local_addr()
         .map_err(|_| AuthError::NetworkUnavailable)?
         .port();
-    let redirect_uri = format!("http://localhost:{port}");
+    let redirect_uri = loopback.uri_for_port(port);
 
     // `_server` is held until this function returns; the drop guard aborts
     // the axum task on every exit path (timeout, callback error, token
@@ -2137,7 +2291,7 @@ async fn browser_pkce_flow(
         AuthError::BrowserOpenFailed
     })?;
 
-    let code = match tokio::time::timeout(BROWSER_AUTH_TIMEOUT, rx).await {
+    let code = match tokio::time::timeout(loopback.prompt_timeout, rx).await {
         // Timed out waiting for the redirect.
         Err(_) => return Err(AuthError::TimedOut),
         // Callback task dropped the sender without sending — treat as timeout.

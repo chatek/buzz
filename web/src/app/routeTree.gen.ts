@@ -6,14 +6,21 @@
 
 import { Route as rootRouteImport } from "./routes/root";
 import { Route as reposRouteImport } from "./routes/repos";
+import { Route as loginRouteImport } from "./routes/login";
 import { Route as indexRouteImport } from "./routes/index";
 import { Route as reposDotrepoIdRouteImport } from "./routes/repos.$repoId";
 import { Route as inviteDotcodeRouteImport } from "./routes/invite.$code";
+import { Route as authDotcallbackRouteImport } from "./routes/auth.callback";
 import { Route as reposDotrepoIdDotblobDotsplatRouteImport } from "./routes/repos.$repoId.blob.$";
 
 const reposRoute = reposRouteImport.update({
   id: "/repos",
   path: "/repos",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const loginRoute = loginRouteImport.update({
+  id: "/login",
+  path: "/login",
   getParentRoute: () => rootRouteImport,
 } as any);
 const indexRoute = indexRouteImport.update({
@@ -31,6 +38,11 @@ const inviteDotcodeRoute = inviteDotcodeRouteImport.update({
   path: "/invite/$code",
   getParentRoute: () => rootRouteImport,
 } as any);
+const authDotcallbackRoute = authDotcallbackRouteImport.update({
+  id: "/auth/callback",
+  path: "/auth/callback",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const reposDotrepoIdDotblobDotsplatRoute =
   reposDotrepoIdDotblobDotsplatRouteImport.update({
     id: "/repos/$repoId/blob/$",
@@ -40,14 +52,18 @@ const reposDotrepoIdDotblobDotsplatRoute =
 
 export interface FileRoutesByFullPath {
   "/": typeof indexRoute;
+  "/login": typeof loginRoute;
   "/repos": typeof reposRoute;
+  "/auth/callback": typeof authDotcallbackRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
   "/repos/$repoId": typeof reposDotrepoIdRoute;
   "/repos/$repoId/blob/$": typeof reposDotrepoIdDotblobDotsplatRoute;
 }
 export interface FileRoutesByTo {
   "/": typeof indexRoute;
+  "/login": typeof loginRoute;
   "/repos": typeof reposRoute;
+  "/auth/callback": typeof authDotcallbackRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
   "/repos/$repoId": typeof reposDotrepoIdRoute;
   "/repos/$repoId/blob/$": typeof reposDotrepoIdDotblobDotsplatRoute;
@@ -55,7 +71,9 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof indexRoute;
+  "/login": typeof loginRoute;
   "/repos": typeof reposRoute;
+  "/auth/callback": typeof authDotcallbackRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
   "/repos/$repoId": typeof reposDotrepoIdRoute;
   "/repos/$repoId/blob/$": typeof reposDotrepoIdDotblobDotsplatRoute;
@@ -64,21 +82,27 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
   fullPaths:
     | "/"
+    | "/login"
     | "/repos"
+    | "/auth/callback"
     | "/invite/$code"
     | "/repos/$repoId"
     | "/repos/$repoId/blob/$";
   fileRoutesByTo: FileRoutesByTo;
   to:
     | "/"
+    | "/login"
     | "/repos"
+    | "/auth/callback"
     | "/invite/$code"
     | "/repos/$repoId"
     | "/repos/$repoId/blob/$";
   id:
     | "__root__"
     | "/"
+    | "/login"
     | "/repos"
+    | "/auth/callback"
     | "/invite/$code"
     | "/repos/$repoId"
     | "/repos/$repoId/blob/$";
@@ -86,7 +110,9 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   indexRoute: typeof indexRoute;
+  loginRoute: typeof loginRoute;
   reposRoute: typeof reposRoute;
+  authDotcallbackRoute: typeof authDotcallbackRoute;
   inviteDotcodeRoute: typeof inviteDotcodeRoute;
   reposDotrepoIdRoute: typeof reposDotrepoIdRoute;
   reposDotrepoIdDotblobDotsplatRoute: typeof reposDotrepoIdDotblobDotsplatRoute;
@@ -99,6 +125,13 @@ declare module "@tanstack/react-router" {
       path: "/repos";
       fullPath: "/repos";
       preLoaderRoute: typeof reposRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/login": {
+      id: "/login";
+      path: "/login";
+      fullPath: "/login";
+      preLoaderRoute: typeof loginRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/": {
@@ -122,6 +155,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof inviteDotcodeRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/auth/callback": {
+      id: "/auth/callback";
+      path: "/auth/callback";
+      fullPath: "/auth/callback";
+      preLoaderRoute: typeof authDotcallbackRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/repos/$repoId/blob/$": {
       id: "/repos/$repoId/blob/$";
       path: "/repos/$repoId/blob/$";
@@ -134,7 +174,9 @@ declare module "@tanstack/react-router" {
 
 const rootRouteChildren: RootRouteChildren = {
   indexRoute: indexRoute,
+  loginRoute: loginRoute,
   reposRoute: reposRoute,
+  authDotcallbackRoute: authDotcallbackRoute,
   inviteDotcodeRoute: inviteDotcodeRoute,
   reposDotrepoIdRoute: reposDotrepoIdRoute,
   reposDotrepoIdDotblobDotsplatRoute: reposDotrepoIdDotblobDotsplatRoute,
