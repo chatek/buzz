@@ -88,6 +88,11 @@ function AuthCallbackPage() {
     }
     completeSignIn({ code, state })
       .then((completed) => {
+        // `completed.returnTo` is `null` (an older stored record, or none) or a
+        // same-origin absolute path: it was classified ONCE, where it entered
+        // the flow (`shared/lib/oidc.ts` -> `shared/lib/return-to.ts`), and no
+        // raw `?returnTo=` is ever stored. Do not add a second check here;
+        // strengthen that one rule.
         window.location.replace(completed.returnTo ?? "/");
       })
       .catch((cause: unknown) => {

@@ -35,6 +35,7 @@ import {
   randomUrlSafe,
   resolveOidcConfig,
 } from "./oidc-config";
+import { safeReturnTo } from "./return-to";
 
 /** sessionStorage key for the in-flight authorization request (single use). */
 export const FLOW_STORAGE_KEY = "buzz-oidc-flow";
@@ -336,6 +337,13 @@ export async function createAuthorizationRequest(
   const state = randomUrlSafe(32);
   const nonce = randomUrlSafe(32);
   const codeVerifier = randomUrlSafe(64);
+  // `?returnTo=` is URL input and this value is navigated to AFTER sign-in
+  // (`app/routes/auth.callback.tsx`), so it is classified HERE — the single
+  // point where an untrusted value enters the persisted flow — and stored only
+  // when it is provably a same-origin absolute path. A refused value becomes
+  // `/`, and so does an absent one; `./return-to.ts` holds the rule and the
+  // defect it closes.
+  const returnTo = safeReturnTo(options?.returnTo);
   const flow: StoredFlow = {
     version: STORAGE_VERSION,
     state,
@@ -344,7 +352,8 @@ export async function createAuthorizationRequest(
     redirectUri: config.redirectUri,
     issuer: config.issuer,
     clientId: config.clientId,
-    returnTo: options?.returnTo ?? null,
+    // Classified above: always a same-origin absolute path.
+    returnTo,
     startedAt: Date.now(),
   };
   writeJson(FLOW_STORAGE_KEY, flow);

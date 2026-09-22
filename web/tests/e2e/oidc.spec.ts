@@ -234,3 +234,58 @@ test("auth callback exchanges the code, shows the identity, then signs out", asy
     ),
   ).toBeNull();
 });
+
+/**
+ * The open-redirect proof, in a REAL BROWSER: the query string an attacker
+ * controls must not survive into the stored PKCE flow record.
+ *
+ * `?returnTo=` reaches `auth.callback.tsx` -> `window.location.replace(...)`
+ * through `buzz-oidc-flow`, so the value the flow record holds is the value the
+ * browser would have navigated to after a real sign-in. The unit test
+ * `tests/unit/open-redirect-return-to.test.ts` asserts the classifier and the
+ * call site; this asserts the same property through the router, the real
+ * `validateSearch`, and real sessionStorage — the path that made the defect
+ * live. No IdP is contacted: discovery and the redirect are stubbed.
+ */
+test("a hostile ?returnTo= is refused before it is stored", async ({
+  page,
+}) => {
+  await page.route(`${ISSUER}/**`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/.well-known/openid-configuration") {
+      await route.fulfill({ json: discovery });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<!doctype html><title>idp</title>",
+    });
+  });
+
+  /** Start a sign-in from `?returnTo=<value>` and report what was stored. */
+  const storedReturnToFor = async (value: string) => {
+    await page.goto(`/login?returnTo=${encodeURIComponent(value)}`);
+    await page.getByRole("button", { name: "Continue with vclaw" }).click();
+    // The click leaves for the stubbed authorization endpoint…
+    await page.waitForURL(`${ISSUER}/**`, { timeout: 10_000 });
+    // …and sessionStorage is per origin, so come back to read what the click
+    // wrote before the browser left.
+    await page.goto("/");
+    const flow = JSON.parse(
+      (await page.evaluate(() =>
+        window.sessionStorage.getItem("buzz-oidc-flow"),
+      )) ?? "null",
+    ) as { returnTo?: string } | null;
+    return flow?.returnTo;
+  };
+
+  // Refused, although an unclassified value would resolve off origin.
+  expect(await storedReturnToFor("https://evil.example")).toBe("/");
+  expect(await storedReturnToFor("//evil.example")).toBe("/");
+  expect(await storedReturnToFor("/\\evil.example")).toBe("/");
+
+  // …and the CONTROL that makes the refusals mean something: an ordinary path
+  // on this origin is kept, so the test is not passing because nothing is stored.
+  expect(await storedReturnToFor("/repos")).toBe("/repos");
+});
