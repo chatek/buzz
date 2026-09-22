@@ -12,10 +12,14 @@
  *  - the ONE live HTTP surface for the mode is `GET /api/authz/shadow`, and it is
  *    NIP-98-wrapped, which a browser cannot sign (`READ internal/api/lane_auth.go:66-77`).
  *    So the console renders **unknown**, never "shadow" and never "enforce";
- *  - NIP-FI's `deny-until-TTL` set (`READ internal/nipfi/denyset.go:9-31`) has no
- *    HTTP surface at all, so `deny_until_ttl.available` is `false` and its
- *    `entries` number means nothing. A `0` there would read as "nothing is
- *    revoked", which is a claim nobody made.
+ *  - NIP-FI's `deny-until-TTL` set (`READ internal/nipfi/denyset.go:9-31`) is now
+ *    ADMINISTERED through a route (`READ buzz-gateway/internal/nipfi/denyadmin.go`:
+ *    `DenyMountPath` + `DenyBarePath`, registered at `cmd/gateway/main.go`), and that
+ *    route is NIP-98-protected. It is still not READABLE from a browser: a browser has
+ *    no key pair, so it cannot produce the header the wrapper requires. So
+ *    `deny_until_ttl.available` stays `false` and its `entries` number still means
+ *    nothing. A `0` there would read as "nothing is revoked", which is a claim nobody
+ *    made. The reason changed; the rendering did not.
  *
  * THE INVARIANT THIS FILE ENFORCES IN ITS OWN CODE:
  *
@@ -205,8 +209,10 @@ export function describeDenyUntilTTL(
   const deny: DenyUntilTTLState | undefined = state?.deny_until_ttl;
   if (deny === undefined || deny.available !== true) {
     const note = typeof deny?.note === "string" ? deny.note.trim() : "";
+    // J20: the surface EXISTS and is NIP-98-protected. The console still reports no
+    // count - the reason changed, the rendering did not (design §6.2 as amended).
     const base =
-      "the deny-until-TTL set has no HTTP surface in this gateway, so this console cannot say how many keys are revoked right now. The count below is not reported, and it is not zero.";
+      "the deny-until-TTL set is administered through a NIP-98-protected route (`/api/nip-fi/deny`), and a browser cannot sign a NIP-98 header, so this console cannot say how many keys are revoked right now. The count below is not reported, and it is not zero.";
     return {
       available: false,
       entries: null,

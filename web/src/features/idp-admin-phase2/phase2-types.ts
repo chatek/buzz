@@ -23,9 +23,11 @@
  *    the word "allow" means anything, so it is the one field a renderer must not
  *    take on faith.
  *  - `deny_until_ttl.entries` is a number only when `deny_until_ttl.available` is
- *    true. No HTTP route reads the deny set today (§6.2), and `entries: 0` would
- *    read as "nothing is revoked", a claim nobody made — so the field is typed
- *    as present-but-meaningless and the renderer must ignore it when unavailable.
+ *    true. The deny set IS administered through a route now (J20: `nipfi.Register`
+ *    on the lane table, NIP-98-protected), but nothing a BROWSER can call reads a
+ *    count from it (§6.2), and `entries: 0` would read as "nothing is revoked", a
+ *    claim nobody made — so the field is typed as present-but-meaningless and the
+ *    renderer must ignore it when unavailable.
  *  - `state` is a NINE-value vocabulary, and the wrapper's exit `0` is not one
  *    thing (§3.3). The applier parses the wrapper's `RESULT:` line and reports
  *    `applied_unverified` when it cannot classify one, so no renderer may
@@ -282,11 +284,12 @@ export type Phase2ChangesResponse = {
 /**
  * The deny-until-TTL set as phase 2 can see it (§6.3).
  *
- * `available: false` is the state this console must render today: there is no
- * HTTP route that reads NIP-FI's deny set, so `entries` carries no information
- * and `exposed_by` is empty. It is typed as always-present because the Go struct
- * has no `omitempty` on it: the object exists, and its `available` flag is the
- * only thing that says whether the numbers in it mean anything.
+ * `available: false` is the state this console must render today: the deny set's
+ * admin route exists and is NIP-98-protected, and a browser cannot sign that header,
+ * so `entries` carries no information and `exposed_by` names the reason rather than a
+ * route. It is typed as always-present because the Go struct has no `omitempty` on it:
+ * the object exists, and its `available` flag is the only thing that says whether the
+ * numbers in it mean anything.
  */
 export type DenyUntilTTLState = {
   available: boolean;

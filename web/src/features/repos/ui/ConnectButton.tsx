@@ -143,9 +143,10 @@ export function ConnectButton({ className }: { className?: string }) {
             </li>
             <li>
               <span className="font-medium">
-                Read, push and review in the browser instead
+                Read the repositories in the browser instead
               </span>{" "}
-              — the dashboard works without the desktop app.
+              — the dashboard works without the desktop app. Pushing and review
+              need the desktop app.
             </li>
             <li>
               Upstream Buzz desktop is at{" "}

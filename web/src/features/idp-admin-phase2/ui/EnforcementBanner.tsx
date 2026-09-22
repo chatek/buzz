@@ -14,8 +14,9 @@
  *   - it does not read `allows_are_enforcement` off the payload; `describeEnforcement`
  *     derives it from `available` and `mode`, and a payload that disagrees with
  *     its own fields has that disagreement printed, not swallowed;
- *   - it does not print a number for the deny-until-TTL set while that set has no
- *     HTTP surface: "0 revocations" is a claim nobody made (§6.2);
+ *   - it does not print a number for the deny-until-TTL set while that set is not
+ *     readable from a browser (the admin route is NIP-98-protected): "0 revocations"
+ *     is a claim nobody made (§6.2);
  *   - it does not render "shadow" for an unknown mode. Unknown is its own answer.
  *
  * PURE: props in, markup out. No fetch, no state, no effect.
