@@ -341,6 +341,11 @@ Desktop E2E: `cd desktop && pnpm test:e2e:smoke` for mock-bridge smoke
 coverage, or `pnpm test:e2e:integration` for relay-backed coverage. These
 scripts build the required E2E bridge before running Playwright.
 
+Web unit tests: `cd web && pnpm test:unit` (`pnpm test` is the same suite, and
+`just web-test` is what the pre-push hooks and CI call). Those files import
+`bun:test`, so the script pins the runner version itself; they live under
+`web/tests/unit/` because the web tsconfig includes only `src/`.
+
 See [TESTING.md](TESTING.md) for the full multi-agent E2E guide.
 
 ### PR Screenshots

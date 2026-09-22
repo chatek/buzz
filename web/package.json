@@ -13,6 +13,8 @@
     "check": "biome check . && pnpm check:pubkey-truncation",
     "format": "biome format --write .",
     "preview": "vite preview",
+    "test": "pnpm test:unit",
+    "test:unit": "pnpm dlx bun@1.4.0 test tests/unit/",
     "test:e2e": "pnpm build && playwright test",
     "test:e2e:smoke": "pnpm build && playwright test --project=smoke"
   },

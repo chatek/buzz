@@ -48,6 +48,12 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Web lint and format
         run: just web-check
+      - name: Web unit tests
+        # `web/tests/unit/**` imports `bun:test` (the post-sign-in `?returnTo=`
+        # classifier, the repos copy/route-table guards, the console-honesty
+        # structure). This repo pins no bun in Hermit, so `just web-test` fetches
+        # the runner from the registry pnpm already uses, at an exact version.
+        run: just web-test
       - name: Web build
         run: just web-build
       - name: Save pnpm store cache

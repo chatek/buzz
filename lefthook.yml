@@ -117,6 +117,14 @@ pre-push:
       files: git diff --name-only origin/main...HEAD
       glob: ["desktop/src-tauri/**", "crates/**", "migrations/**", "schema/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "deny.toml", "scripts/run-tests.sh", "Justfile"]
       run: just desktop-tauri-clippy && just desktop-tauri-test
+    web-test:
+      # The web unit files import `bun:test`, so this is their only runner — it
+      # guards web/tests/unit/** (the post-sign-in `?returnTo=` classifier, the
+      # repos copy/route-table guards, the console-honesty structure). Glob
+      # mirrors CI's `web` filter group, like the desktop lanes above.
+      files: git diff --name-only origin/main...HEAD
+      glob: ["web/**", "pnpm-lock.yaml"]
+      run: just web-test
     mobile-checks:
       # Run analysis and tests serially so parallel pre-push hooks do not
       # contend for shared Flutter state (.dart_tool, shader bundle).
