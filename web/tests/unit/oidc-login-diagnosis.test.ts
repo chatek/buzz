@@ -256,6 +256,44 @@ describe("LEG 1 — a timeout is not a network failure is not a status", () => {
     expect(elapsed).toBeGreaterThanOrEqual(2 * TEST_BUDGET_MS - 20);
   });
 
+  /**
+   * THE TWO NUMBERS IN THE SENTENCE MUST AGREE. A diagnostic that quotes a
+   * budget of 20 s next to an abort at 1502 ms is the SAME defect class as the
+   * one this file exists for — a sentence that does not describe what happened
+   * — one level down. Both numbers must come from the ONE attempt that failed
+   * (the budget passed to the abort signal and the elapsed time measured in the
+   * same `catch`), so an abort can never predate its own budget, and quoting
+   * seconds must not move the pair out of the same magnitude band.
+   */
+  test("the budget and the elapsed time in the timeout sentence AGREE", async () => {
+    // Both spellings of `describeSeconds`: sub-second and seconds.
+    for (const budget of [120, 1_500]) {
+      calls = [];
+      clearOidcLog();
+      impl = hangingEndpoint();
+      const error = await rejection(() =>
+        fetchDiscovery(CONFIG, { timeoutMs: budget, attempts: 1 }),
+      );
+      const match =
+        /did not answer within (\d+(?:\.\d+)?) (ms|s) \(the request was aborted after (\d+) ms\)/.exec(
+          error.message,
+        );
+      expect(match, `unparsable sentence: ${error.message}`).not.toBeNull();
+      const quotedBudgetMs =
+        Number(match?.[1]) * (match?.[2] === "s" ? 1_000 : 1);
+      const quotedElapsedMs = Number(match?.[3]);
+
+      // Both numbers are the ones recorded for THIS failure.
+      expect(quotedBudgetMs).toBe(error.detail.timeoutMs);
+      expect(quotedElapsedMs).toBe(error.detail.elapsedMs);
+      // An abort cannot happen before its own budget, nor long after it.
+      expect(quotedElapsedMs).toBeGreaterThanOrEqual(quotedBudgetMs);
+      expect(quotedElapsedMs).toBeLessThan(quotedBudgetMs + 1_000);
+      // Rounding to seconds must not pair a 20 s sentence with a 1.5 s abort.
+      expect(Math.abs(quotedElapsedMs - quotedBudgetMs)).toBeLessThan(1_000);
+    }
+  });
+
   test("the retry is VISIBLE, not silent (log + the count in the message)", async () => {
     impl = hangingEndpoint();
     await rejection(() =>
