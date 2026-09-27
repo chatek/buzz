@@ -23,17 +23,39 @@
  * this module never checks the signature and the claims are for display only.
  * Authorization decisions belong to the relay/issuer, which verifies the
  * assertion against the issuer JWKS (NIP-FI, 115-OIDC-FORK-PLAN.md §5).
+ *
+ * FAILURES ARE NAMED (I-19 + I-29, measured 2026-09-27). The shipped module
+ * emitted ONE sentence — "Could not reach the identity provider at …" — for a
+ * timeout, a DNS failure, a TLS failure, a CORS/opaque refusal and an abort
+ * alike, from a single `catch`, with no elapsed time. It also spent a network
+ * round trip on discovery before it could build the authorization URL, against
+ * a measured 9 s tail TTFB and a 10 s abort. Now:
+ *   - every transport failure carries a `cause` (`timeout` vs `network`) plus
+ *     the elapsed ms against the configured budget, in the message AND in the
+ *     error's `detail`;
+ *   - the discovery budget is 20 s per attempt and ONE retry is allowed on a
+ *     transport failure, logged as it happens and counted in the message;
+ *   - the login path uses the BAKED endpoints by default, so nothing is
+ *     fetched before the redirect (discovery is the fallback, not the gate);
+ *   - a failed attempt never writes or clears the discovery cache, so a bad
+ *     minute cannot become a fetch storm.
+ * The error `code`s are unchanged (`discovery_unreachable`, `discovery_failed`,
+ * `discovery_malformed`); the CAUSE is what was missing and is what is added.
  */
 
 import {
   AUTHELIA_LOGOUT_PATH,
+  bakedDiscovery,
   buildAuthorizationUrl,
   discoveryUrl,
   type OidcConfig,
   type OidcEnv,
   pkceChallenge,
   randomUrlSafe,
+  resolveDiscoveryMode,
+  resolveDiscoveryTimeoutMs,
   resolveOidcConfig,
+  resolveTokenTimeoutMs,
 } from "./oidc-config";
 import { safeReturnTo } from "./return-to";
 
@@ -51,8 +73,14 @@ export const EXPIRY_SKEW_MS = 30_000;
 /** Fallback when the token response omits `expires_in`. */
 const DEFAULT_ACCESS_TOKEN_LIFETIME_MS = 5 * 60 * 1_000;
 const DISCOVERY_TTL_MS = 10 * 60 * 1_000;
-const DISCOVERY_TIMEOUT_MS = 10_000;
-const TOKEN_TIMEOUT_MS = 15_000;
+/**
+ * Attempts per discovery request. 2 = the first transport failure gets ONE
+ * bounded retry (a JSON GET is safe to repeat); a status answer is not
+ * retried, and neither is the token POST (an authorization code is single use —
+ * see `postTokenRequest`). The per-attempt budget is the env-overridable
+ * `VITE_OIDC_DISCOVERY_TIMEOUT_MS` (default 20 s).
+ */
+const DISCOVERY_ATTEMPTS = 2;
 
 const STORAGE_VERSION = 1;
 
@@ -124,19 +152,38 @@ export type StoredFlow = {
   startedAt: number;
 };
 
-/** A typed failure with a stable machine-readable `code`. */
+/**
+ * A typed failure with a stable machine-readable `code` plus a `detail` bag.
+ *
+ * `code` is the coarse state the app already had (`discovery_unreachable`,
+ * `discovery_failed`, `discovery_malformed`, `token_endpoint_unreachable`, …).
+ * `detail.cause` is the part the shipped module threw away: `timeout` vs
+ * `network` vs `http_status` vs `not_json`, with the elapsed ms, the budget,
+ * the status and a body snippet. A caller may show `message`; a human
+ * diagnosing the human path wants `detail`.
+ */
 export class OidcError extends Error {
   readonly code: string;
+  readonly detail: Readonly<Record<string, unknown>>;
 
-  constructor(code: string, message: string) {
+  constructor(
+    code: string,
+    message: string,
+    detail: Record<string, unknown> = {},
+  ) {
     super(message);
     this.name = "OidcError";
     this.code = code;
+    this.detail = detail;
   }
 }
 
-function fail(code: string, message: string): never {
-  throw new OidcError(code, message);
+function fail(
+  code: string,
+  message: string,
+  detail?: Record<string, unknown>,
+): never {
+  throw new OidcError(code, message, detail);
 }
 
 /* ------------------------------------------------------------------ config */
@@ -157,65 +204,469 @@ export function currentOidcConfig(): OidcConfig {
 
 /* --------------------------------------------------------------- discovery */
 
+/**
+ * WHY a request did not produce a document. The `code` stays coarse on purpose
+ * (`discovery_unreachable` covers every transport failure, as it always has);
+ * the cause is what the shipped module threw away.
+ */
+export type RequestFailureCause = "timeout" | "network";
+
+export type DiscoveryProgress = {
+  phase: "start" | "retry" | "failed";
+  /** 1-based attempt number the event belongs to. */
+  attempt: number;
+  attempts: number;
+  timeoutMs: number;
+  /** Wall-clock ms the attempt that produced this event took. */
+  elapsedMs: number;
+};
+
+export type DiscoveryOptions = {
+  force?: boolean;
+  /** Per-attempt abort budget; defaults to `VITE_OIDC_DISCOVERY_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** Total attempts, 1 = no retry; defaults to 2 (one retry). */
+  attempts?: number;
+  /** Called at the start of every attempt and on a retry/give-up, for the UI. */
+  onProgress?: (event: DiscoveryProgress) => void;
+};
+
+export type EndpointSource =
+  | "baked"
+  | "discovery"
+  | "discovery-cache"
+  | "provided";
+
+/** What the app used to address the IdP on the last login attempt. */
+export type EndpointResolution = {
+  source: EndpointSource;
+  issuer: string;
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  at: number;
+};
+
+export type OidcLogEntry = {
+  at: number;
+  level: "info" | "warn";
+  message: string;
+};
+
+const LOG_LIMIT = 50;
+const logEntries: OidcLogEntry[] = [];
+
+/** The recent `oidc.ts` decisions and failures, newest last (diagnostics). */
+export function oidcLog(): readonly OidcLogEntry[] {
+  return logEntries;
+}
+
+export function clearOidcLog(): void {
+  logEntries.length = 0;
+}
+
+function log(level: OidcLogEntry["level"], message: string): void {
+  logEntries.push({ at: Date.now(), level, message });
+  if (logEntries.length > LOG_LIMIT) {
+    logEntries.shift();
+  }
+  const line = `[oidc] ${message}`;
+  if (level === "warn") {
+    console.warn(line);
+  } else {
+    console.info(line);
+  }
+}
+
 let discoveryCache: {
   key: string;
   fetchedAt: number;
   value: OidcDiscovery;
 } | null = null;
 
-/**
- * Fetch and cache the issuer's discovery document (in memory, 10 minutes;
- * a full page load re-fetches). Cached in memory rather than storage because
- * it is cheap, public, and must never be trusted from a previous session.
- */
-export async function fetchDiscovery(
-  config: OidcConfig,
-  options?: { force?: boolean },
-): Promise<OidcDiscovery> {
-  const url = discoveryUrl(config);
+let lastResolution: EndpointResolution | null = null;
+
+/** Which endpoints the last login attempt used, and where they came from. */
+export function lastEndpointResolution(): EndpointResolution | null {
+  return lastResolution;
+}
+
+/** Drop the in-memory discovery document (sign-out; tests; drift fallback). */
+export function clearDiscoveryCache(): void {
+  discoveryCache = null;
+}
+
+/** The cached document when it is still inside the TTL, else null. */
+function cachedDiscovery(config: OidcConfig): OidcDiscovery | null {
   const cached = discoveryCache;
-  if (
-    !options?.force &&
-    cached &&
-    cached.key === url &&
-    Date.now() - cached.fetchedAt < DISCOVERY_TTL_MS
-  ) {
-    return cached.value;
+  if (!cached || cached.key !== discoveryUrl(config)) {
+    return null;
   }
+  return Date.now() - cached.fetchedAt < DISCOVERY_TTL_MS ? cached.value : null;
+}
+
+/* -------------------------------------------------- failure vocabulary (I-29) */
+
+/** `AbortSignal.timeout` rejects with `TimeoutError` (and `AbortError` before
+ * the spec settled); both mean "we hit OUR budget", not "the network refused". */
+function isAbortError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return error.name === "AbortError" || error.name === "TimeoutError";
+}
+
+function describeSeconds(ms: number): string {
+  if (ms < 1_000) {
+    return `${ms} ms`;
+  }
+  return ms % 1_000 === 0 ? `${ms / 1_000} s` : `${(ms / 1_000).toFixed(1)} s`;
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message ? `${error.name}: ${error.message}` : error.name;
+  }
+  return String(error);
+}
+
+/** A browser cannot separate DNS from CORS from a refused TCP connection; the
+ * online/offline signal is the one extra fact it DOES have. Say so honestly. */
+function onlineNote(): string {
+  if (
+    typeof navigator === "undefined" ||
+    typeof navigator.onLine !== "boolean"
+  ) {
+    return "this browser does not report an online/offline state";
+  }
+  return navigator.onLine
+    ? "this browser reports it is ONLINE, so suspect DNS, routing, TLS or the issuer's CORS policy for this origin"
+    : "this browser reports it is OFFLINE";
+}
+
+function snippetOf(text: string, limit = 160): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return collapsed.length > limit ? `${collapsed.slice(0, limit)}…` : collapsed;
+}
+
+function contentTypeOf(response: Response): string {
+  try {
+    return response.headers.get("content-type") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * `AbortSignal.timeout` where it exists (Chrome 103+, Safari 16+), and an
+ * equivalent AbortController timer where it does not — the abort budget is the
+ * feature that bounds the wait, so it must not silently go missing.
+ */
+function budgetSignal(ms: number): AbortSignal {
+  const native = (
+    AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal }
+  ).timeout;
+  if (typeof native === "function") {
+    return native.call(AbortSignal, ms);
+  }
+  const controller = new AbortController();
+  setTimeout(() => {
+    controller.abort(
+      new DOMException(`aborted after ${ms} ms`, "TimeoutError"),
+    );
+  }, ms);
+  return controller.signal;
+}
+
+type DiscoveryAttempt =
+  | { ok: true; document: OidcDiscovery; elapsedMs: number; status: number }
+  | { ok: false; retryable: boolean; elapsedMs: number; error: OidcError };
+
+async function attemptDiscoveryFetch(
+  url: string,
+  issuer: string,
+  timeoutMs: number,
+): Promise<DiscoveryAttempt> {
+  const startedAt = Date.now();
   let response: Response;
   try {
     response = await fetch(url, {
       headers: { Accept: "application/json" },
+      // A public document: no cookies, no credentials (deliberate — keep it).
       credentials: "omit",
-      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+      signal: budgetSignal(timeoutMs),
     });
-  } catch {
-    return fail(
-      "discovery_unreachable",
-      `Could not reach the identity provider at ${config.issuer}.`,
-    );
+  } catch (error) {
+    const elapsedMs = Date.now() - startedAt;
+    const cause: RequestFailureCause = isAbortError(error)
+      ? "timeout"
+      : "network";
+    const message =
+      cause === "timeout"
+        ? `The identity provider at ${issuer} did not answer within ${describeSeconds(
+            timeoutMs,
+          )} (the request was aborted after ${elapsedMs} ms). A slow or unreachable network path can do this; the request may still have been served. Nothing was stored.`
+        : `The browser could not reach the identity provider at ${issuer}: the request failed after ${elapsedMs} ms with ${describeError(
+            error,
+          )}. A DNS failure, a refused connection and a cross-origin (CORS) refusal are indistinguishable to a browser; ${onlineNote()}. Nothing was stored.`;
+    return {
+      ok: false,
+      // A transport failure is the only thing worth repeating here.
+      retryable: true,
+      elapsedMs,
+      error: new OidcError("discovery_unreachable", message, {
+        cause,
+        elapsedMs,
+        timeoutMs,
+        url,
+        issuer,
+        error: describeError(error),
+      }),
+    };
   }
+
+  const elapsedMs = Date.now() - startedAt;
+  // Read the body as TEXT first, so a non-JSON body can be quoted back
+  // (`response.json()` would consume it and lose the evidence).
+  const raw = await response.text().catch(() => "");
   if (!response.ok) {
-    return fail(
-      "discovery_failed",
-      `The identity provider discovery document returned HTTP ${response.status}.`,
-    );
+    const snippet = snippetOf(raw);
+    return {
+      ok: false,
+      // A status is an ANSWER: repeating the request will not change it.
+      retryable: false,
+      elapsedMs,
+      error: new OidcError(
+        "discovery_failed",
+        `The identity provider at ${issuer} answered the discovery request with HTTP ${response.status} after ${elapsedMs} ms${
+          snippet ? `: ${snippet}` : " and an empty body"
+        }. Nothing was stored.`,
+        {
+          cause: "http_status",
+          status: response.status,
+          elapsedMs,
+          url,
+          issuer,
+          contentType: contentTypeOf(response),
+          snippet,
+        },
+      ),
+    };
   }
-  const document = (await response
-    .json()
-    .catch(() => null)) as OidcDiscovery | null;
+
+  let parsed: unknown = null;
+  let parseError = "";
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    parseError = describeError(error);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    const contentType = contentTypeOf(response);
+    return {
+      ok: false,
+      retryable: false,
+      elapsedMs,
+      error: new OidcError(
+        "discovery_malformed",
+        `The identity provider at ${issuer} answered HTTP ${response.status} after ${elapsedMs} ms, but the discovery body is not a JSON object${
+          contentType ? ` (content-type: ${contentType})` : ""
+        }${parseError ? ` [${parseError}]` : ""}${
+          raw ? `: ${snippetOf(raw)}` : " and it is empty"
+        }. Something other than the identity provider may be serving this path. Nothing was stored.`,
+        {
+          cause: "not_json",
+          status: response.status,
+          elapsedMs,
+          url,
+          issuer,
+          contentType,
+          snippet: snippetOf(raw),
+          parseError,
+        },
+      ),
+    };
+  }
+
+  const document = parsed as OidcDiscovery;
   if (
-    !document ||
     typeof document.authorization_endpoint !== "string" ||
     typeof document.token_endpoint !== "string"
   ) {
-    return fail(
-      "discovery_malformed",
-      "The identity provider discovery document is missing required endpoints.",
-    );
+    return {
+      ok: false,
+      retryable: false,
+      elapsedMs,
+      error: new OidcError(
+        "discovery_malformed",
+        "The identity provider discovery document is missing required endpoints.",
+        {
+          cause: "missing_endpoints",
+          status: response.status,
+          elapsedMs,
+          url,
+          issuer,
+          snippet: snippetOf(raw),
+        },
+      ),
+    };
   }
-  discoveryCache = { key: url, fetchedAt: Date.now(), value: document };
-  return document;
+  return { ok: true, document, elapsedMs, status: response.status };
+}
+
+/**
+ * Fetch and cache the issuer's discovery document (in memory, 10 minutes; a
+ * full page load re-fetches). Cached in memory rather than storage because it
+ * is cheap, public, and must never be trusted from a previous session.
+ *
+ * ONE retry on a transport failure, and the retry is visible: it is logged,
+ * counted in the final message, and reported to `options.onProgress`. A failed
+ * attempt NEVER writes or clears the cache, so an outage cannot turn a cached
+ * document into a fetch storm.
+ */
+export async function fetchDiscovery(
+  config: OidcConfig,
+  options?: DiscoveryOptions,
+): Promise<OidcDiscovery> {
+  const url = discoveryUrl(config);
+  if (!options?.force) {
+    const cached = cachedDiscovery(config);
+    if (cached) {
+      log(
+        "info",
+        `discovery: in-memory cache hit for ${url} — no request made`,
+      );
+      return cached;
+    }
+  }
+  const timeoutMs = options?.timeoutMs ?? resolveDiscoveryTimeoutMs(oidcEnv());
+  const attempts = Math.max(1, options?.attempts ?? DISCOVERY_ATTEMPTS);
+  const startedAt = Date.now();
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    options?.onProgress?.({
+      phase: "start",
+      attempt,
+      attempts,
+      timeoutMs,
+      elapsedMs: 0,
+    });
+    log(
+      "info",
+      `discovery: attempt ${attempt}/${attempts} GET ${url} (abort after ${timeoutMs} ms)`,
+    );
+    const result = await attemptDiscoveryFetch(url, config.issuer, timeoutMs);
+    if (result.ok) {
+      discoveryCache = {
+        key: url,
+        fetchedAt: Date.now(),
+        value: result.document,
+      };
+      log(
+        "info",
+        `discovery: HTTP ${result.status} in ${result.elapsedMs} ms → authorization_endpoint=${result.document.authorization_endpoint} token_endpoint=${result.document.token_endpoint}`,
+      );
+      return result.document;
+    }
+    const retrying = result.retryable && attempt < attempts;
+    options?.onProgress?.({
+      phase: retrying ? "retry" : "failed",
+      attempt,
+      attempts,
+      timeoutMs,
+      elapsedMs: result.elapsedMs,
+    });
+    log(
+      "warn",
+      `discovery: attempt ${attempt}/${attempts} failed (${result.error.code}) after ${result.elapsedMs} ms — ${
+        retrying
+          ? "retrying once (a JSON GET is safe to repeat)"
+          : `giving up after ${Date.now() - startedAt} ms in total`
+      }`,
+    );
+    if (!retrying) {
+      throw result.error;
+    }
+  }
+  // The loop either returns a document or throws; this keeps the types honest.
+  return fail(
+    "discovery_unreachable",
+    `Discovery of ${url} produced no result.`,
+  );
+}
+
+/**
+ * The endpoints to use for a login, plus WHERE THEY CAME FROM.
+ *
+ * `baked` is the default: the issuer is known and its three paths are fixed,
+ * so the login button performs NO network request before it redirects (I-19
+ * put a 9 s tail TTFB in front of every login). `VITE_OIDC_DISCOVERY=always`
+ * restores discovery-first, and a 404/405 from the token endpoint on the baked
+ * path falls back to discovery (see `exchangeAtTokenEndpoint`).
+ */
+async function resolveEndpoints(
+  config: OidcConfig,
+  options?: {
+    discovery?: OidcDiscovery;
+    onProgress?: (event: DiscoveryProgress) => void;
+  },
+): Promise<{ discovery: OidcDiscovery; source: EndpointSource }> {
+  if (options?.discovery) {
+    recordResolution("provided", options.discovery, config);
+    return { discovery: options.discovery, source: "provided" };
+  }
+  const cached = cachedDiscovery(config);
+  if (resolveDiscoveryMode(oidcEnv()) === "baked") {
+    const baked = bakedDiscovery(config);
+    recordResolution("baked", baked, config);
+    log(
+      "info",
+      `endpoints: using the BAKED endpoints for ${config.issuer} — no discovery round trip on the login path (set VITE_OIDC_DISCOVERY=always to fetch discovery first)`,
+    );
+    return { discovery: baked, source: "baked" };
+  }
+  const document = await fetchDiscovery(config, {
+    onProgress: options?.onProgress,
+  });
+  const source: EndpointSource =
+    cached && cached === document ? "discovery-cache" : "discovery";
+  recordResolution(source, document, config);
+  return { discovery: document, source };
+}
+
+function recordResolution(
+  source: EndpointSource,
+  discovery: OidcDiscovery,
+  config: OidcConfig,
+): void {
+  lastResolution = {
+    source,
+    issuer: config.issuer,
+    authorizationEndpoint: discovery.authorization_endpoint,
+    tokenEndpoint: discovery.token_endpoint,
+    at: Date.now(),
+  };
+}
+
+/** The build-time env, read at CALL time so a test (or a late env) can set it. */
+let envOverrides: OidcEnv | null = null;
+
+/**
+ * Replace the env `oidc.ts` reads (TEST/EMBEDDING ONLY — the app never calls
+ * this; `null` restores `import.meta.env`). Exists so the baked-vs-discovery
+ * choice and the timeout budget can be exercised without a rebuild.
+ */
+export function setOidcEnvOverride(env: OidcEnv | null): void {
+  envOverrides = env;
+}
+
+function oidcEnv(): OidcEnv | undefined {
+  if (envOverrides) {
+    return envOverrides;
+  }
+  try {
+    return (import.meta.env ?? undefined) as OidcEnv | undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /* ------------------------------------------------------- storage primitives */
@@ -322,9 +773,15 @@ export async function createAuthorizationRequest(
     returnTo?: string | null;
     prompt?: string;
     discovery?: OidcDiscovery;
+    /** Progress of the discovery fetch, when one happens (it usually does not). */
+    onProgress?: (event: DiscoveryProgress) => void;
   },
 ): Promise<AuthorizationRequest> {
-  const discovery = options?.discovery ?? (await fetchDiscovery(config));
+  const resolved = await resolveEndpoints(config, {
+    discovery: options?.discovery,
+    onProgress: options?.onProgress,
+  });
+  const discovery = resolved.discovery;
   if (
     Array.isArray(discovery.code_challenge_methods_supported) &&
     !discovery.code_challenge_methods_supported.includes("S256")
@@ -420,7 +877,9 @@ function parseTokenResponse(
 async function postTokenRequest(
   tokenEndpoint: string,
   body: URLSearchParams,
+  timeoutMs: number = resolveTokenTimeoutMs(oidcEnv()),
 ): Promise<OidcTokens> {
+  const startedAt = Date.now();
   let response: Response;
   try {
     response = await fetch(tokenEndpoint, {
@@ -434,14 +893,37 @@ async function postTokenRequest(
       // — enabled by the lead, 115-OIDC-FORK-PLAN.md §2).
       credentials: "omit",
       body,
-      signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+      signal: budgetSignal(timeoutMs),
     });
-  } catch {
+  } catch (error) {
+    const elapsedMs = Date.now() - startedAt;
+    // NO RETRY HERE, deliberately: an authorization code is single use, so an
+    // automatic repeat can burn the code and turn a slow network into
+    // `invalid_grant`. Discovery (a GET) retries; the exchange does not.
+    if (isAbortError(error)) {
+      return fail(
+        "token_endpoint_unreachable",
+        `The identity provider token endpoint did not answer within ${describeSeconds(
+          timeoutMs,
+        )} (the request was aborted after ${elapsedMs} ms; the code was NOT redeemed here). Start the sign-in again from the button. Nothing was stored.`,
+        { cause: "timeout", elapsedMs, timeoutMs, endpoint: tokenEndpoint },
+      );
+    }
     return fail(
       "token_endpoint_unreachable",
-      "Could not reach the identity provider token endpoint. If this is a cross-origin failure, the issuer must allow this origin for /api/oidc/token.",
+      `The browser could not reach the identity provider token endpoint: the request failed after ${elapsedMs} ms with ${describeError(
+        error,
+      )}. A DNS failure, a refused connection and a cross-origin (CORS) refusal are indistinguishable to a browser; ${onlineNote()} — the issuer must allow this origin for /api/oidc/token. Nothing was stored.`,
+      {
+        cause: "network",
+        elapsedMs,
+        timeoutMs,
+        endpoint: tokenEndpoint,
+        error: describeError(error),
+      },
     );
   }
+  const elapsedMs = Date.now() - startedAt;
   const payload = (await response
     .json()
     .catch(() => ({}))) as TokenEndpointResponse;
@@ -454,9 +936,62 @@ async function postTokenRequest(
       typeof payload.error_description === "string"
         ? payload.error_description
         : `the token endpoint returned HTTP ${response.status}`;
-    return fail(code, `Sign-in was refused: ${detail}.`);
+    return fail(code, `Sign-in was refused: ${detail}.`, {
+      cause: "http_status",
+      status: response.status,
+      elapsedMs,
+      endpoint: tokenEndpoint,
+    });
   }
   return parseTokenResponse(payload);
+}
+
+/** A 404/405 from the token endpoint is the signature of a stale BAKED path. */
+function isEndpointDrift(cause: unknown): boolean {
+  return (
+    cause instanceof OidcError &&
+    (cause.code === "http_404" || cause.code === "http_405")
+  );
+}
+
+/**
+ * POST a token request to an endpoint, with the DISCOVERY FALLBACK: when the
+ * endpoint came from the baked configuration and the issuer answers 404/405
+ * (i.e. the assumption has drifted), re-resolve the endpoints from the
+ * discovery document once and repeat. Which one ran is logged and recorded in
+ * `lastEndpointResolution()`.
+ */
+async function exchangeAtTokenEndpoint(params: {
+  config: OidcConfig;
+  discovery: OidcDiscovery;
+  source: EndpointSource;
+  body: URLSearchParams;
+}): Promise<OidcTokens> {
+  const timeoutMs = resolveTokenTimeoutMs(oidcEnv());
+  try {
+    return await postTokenRequest(
+      params.discovery.token_endpoint,
+      params.body,
+      timeoutMs,
+    );
+  } catch (cause) {
+    if (params.source !== "baked" || !isEndpointDrift(cause)) {
+      throw cause;
+    }
+    log(
+      "warn",
+      `token: the BAKED endpoint ${params.discovery.token_endpoint} answered ${
+        (cause as OidcError).code
+      } — falling back to discovery and retrying once`,
+    );
+    const document = await fetchDiscovery(params.config, { force: true });
+    recordResolution("discovery", document, params.config);
+    log(
+      "info",
+      `token: retrying against the DISCOVERED endpoint ${document.token_endpoint}`,
+    );
+    return postTokenRequest(document.token_endpoint, params.body, timeoutMs);
+  }
 }
 
 /** Redeem an authorization code. Public client: no secret, PKCE verifier only. */
@@ -465,17 +1000,21 @@ export async function exchangeAuthorizationCode(params: {
   discovery: OidcDiscovery;
   code: string;
   codeVerifier: string;
+  /** Where `discovery` came from; `baked` unlocks the drift fallback. */
+  source?: EndpointSource;
 }): Promise<OidcTokens> {
-  return postTokenRequest(
-    params.discovery.token_endpoint,
-    new URLSearchParams({
+  return exchangeAtTokenEndpoint({
+    config: params.config,
+    discovery: params.discovery,
+    source: params.source ?? "provided",
+    body: new URLSearchParams({
       grant_type: "authorization_code",
       code: params.code,
       redirect_uri: params.config.redirectUri,
       client_id: params.config.clientId,
       code_verifier: params.codeVerifier,
     }),
-  );
+  });
 }
 
 /**
@@ -493,15 +1032,17 @@ export async function refreshSession(): Promise<OidcSession> {
     return session;
   }
   const config = currentOidcConfig();
-  const discovery = await fetchDiscovery(config);
-  const tokens = await postTokenRequest(
-    discovery.token_endpoint,
-    new URLSearchParams({
+  const resolved = await resolveEndpoints(config);
+  const tokens = await exchangeAtTokenEndpoint({
+    config,
+    discovery: resolved.discovery,
+    source: resolved.source,
+    body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: session.tokens.refreshToken,
       client_id: config.clientId,
     }),
-  );
+  });
   const refreshed: OidcSession = {
     version: STORAGE_VERSION,
     tokens,
@@ -643,10 +1184,11 @@ async function runCompleteAuthorizationCallback(
     );
   }
 
-  const discovery = await fetchDiscovery(config);
+  const resolved = await resolveEndpoints(config);
   const tokens = await exchangeAuthorizationCode({
     config,
-    discovery,
+    discovery: resolved.discovery,
+    source: resolved.source,
     code: params.code,
     codeVerifier: flow.codeVerifier,
   });

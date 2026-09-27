@@ -22,7 +22,7 @@ export const Route = createFileRoute("/login")({
 });
 
 function LoginPage() {
-  const { status, principal, error, signIn } = useSession();
+  const { status, principal, error, progress, signIn } = useSession();
   const { returnTo } = Route.useSearch();
   const [starting, setStarting] = React.useState(false);
 
@@ -79,6 +79,15 @@ function LoginPage() {
             Back to Buzz
           </Link>
         </div>
+
+        {!error && starting && progress ? (
+          <p
+            className="mt-4 text-sm text-black/60 dark:text-white/60"
+            role="status"
+          >
+            {progress}
+          </p>
+        ) : null}
 
         {error ? (
           <p

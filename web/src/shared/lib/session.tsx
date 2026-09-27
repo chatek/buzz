@@ -36,6 +36,13 @@ export type SessionContextValue = {
   principal: SessionPrincipal | null;
   /** Human-readable reason the last sign-in attempt failed. */
   error: string | null;
+  /**
+   * What the sign-in attempt is doing right now, when it is waiting on the
+   * IdP (e.g. a visible retry after a timeout). `null` when nothing is known
+   * — which is the normal case: the login path uses the baked endpoints and
+   * makes no request before it redirects.
+   */
+  progress: string | null;
   /** Start the PKCE flow; navigates away and does not resolve. */
   signIn(options?: { returnTo?: string; prompt?: string }): Promise<void>;
   /** Finish the PKCE flow from `/auth/callback`. Rejects on failure. */
@@ -74,6 +81,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     null,
   );
   const [error, setError] = React.useState<string | null>(null);
+  const [progress, setProgress] = React.useState<string | null>(null);
 
   const applySession = React.useCallback((session: OidcSession | null) => {
     if (session) {
@@ -130,13 +138,26 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const signIn = React.useCallback(
     async (options?: { returnTo?: string; prompt?: string }) => {
       setError(null);
+      setProgress(null);
       try {
         const request = await createAuthorizationRequest(currentOidcConfig(), {
           returnTo: options?.returnTo ?? defaultReturnTo(),
           prompt: options?.prompt,
+          // VISIBLE, NOT SILENT: the retry after a timeout is reported here
+          // (the login button shows it) and logged by `oidc.ts`.
+          onProgress: (event) => {
+            setProgress(
+              event.phase === "retry"
+                ? `The identity provider did not answer within ${Math.round(
+                    event.timeoutMs / 1_000,
+                  )} s. Retrying (attempt ${event.attempt + 1} of ${event.attempts})…`
+                : `Contacting the identity provider… (attempt ${event.attempt} of ${event.attempts})`,
+            );
+          },
         });
         window.location.assign(request.url);
       } catch (cause) {
+        setProgress(null);
         setError(messageOf(cause));
       }
     },
@@ -151,6 +172,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         setError(null);
         return completed;
       } catch (cause) {
+        setProgress(null);
         setError(messageOf(cause));
         throw cause;
       }
@@ -162,6 +184,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     await clearOidcSession();
     applySession(null);
     setError(null);
+    setProgress(null);
   }, [applySession]);
 
   const value = React.useMemo<SessionContextValue>(
@@ -169,12 +192,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       status,
       principal,
       error,
+      progress,
       signIn,
       completeSignIn,
       signOut,
       getAccessToken: getValidAccessToken,
     }),
-    [status, principal, error, signIn, completeSignIn, signOut],
+    [status, principal, error, progress, signIn, completeSignIn, signOut],
   );
 
   return (
