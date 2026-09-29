@@ -693,7 +693,7 @@ function CommunityApp({
 }
 
 function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
-  const { activeCommunity } = useCommunities();
+  const { activeCommunity, reloadFromStorage } = useCommunities();
   const communityOnboarding = useCommunityOnboarding();
   const machine = useMachineOnboardingState({
     activeCommunityPubkey: activeCommunity
@@ -715,6 +715,10 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
     (pubkey?: string, options?: { continueToProfile?: boolean }) => {
       setContinueOnboarding(options?.continueToProfile === true);
       setMachineInitialPage(undefined);
+      // The vclaw login provisioned the community OUTSIDE React state (see
+      // provisionVclawCommunity); re-read before leaving onboarding so the
+      // app mounts into it instead of the first-run community picker.
+      reloadFromStorage();
       machine.complete(pubkey);
     },
     [machine.complete],

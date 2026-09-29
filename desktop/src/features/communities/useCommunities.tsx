@@ -140,6 +140,14 @@ export type UseCommunitiesReturn = {
   /** Add a community, deduplicating by relayUrl. Returns the final ID in the list. */
   addCommunity: (community: Community) => string;
   clearCommunities: () => void;
+  /** Re-read communities and the active id from storage.
+   *
+   * The provider loads once at mount, but some writes happen outside React —
+   * notably `provisionVclawCommunity` at vclaw login, which persists directly
+   * so the operator never sees a community picker. Without this call the app
+   * keeps its mount-time (empty) list and shows first-run setup even though
+   * storage holds the provisioned community and its active id. */
+  reloadFromStorage: () => void;
   removeCommunity: (id: string) => void;
   switchCommunity: (id: string) => void;
   /** Force the active community to re-init (e.g. after a deep-link reconnect). */
@@ -214,6 +222,14 @@ function useCommunitiesInternal(): UseCommunitiesReturn {
       return next;
     });
     return resolvedId;
+  }, []);
+
+  const reloadFromStorage = useCallback(() => {
+    setCommunitiesState(loadCommunities());
+    setActiveId(loadActiveCommunityId());
+    // No reinitKey bump: communityKey already re-keys when activeCommunity
+    // changes (App.tsx `communityKey`), and a bump here would reconnect a
+    // community that did not change.
   }, []);
 
   const clearCommunities = useCallback(() => {
@@ -330,6 +346,7 @@ function useCommunitiesInternal(): UseCommunitiesReturn {
     reinitKey,
     addCommunity,
     clearCommunities,
+    reloadFromStorage,
     removeCommunity,
     switchCommunity,
     reconnectCommunity,
