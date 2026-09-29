@@ -21,7 +21,42 @@ use tauri::Manager;
 
 use crate::util::replace_with_symlink;
 
+/// The app's CURRENT identifiers. These MUST track `identifier` in
+/// `tauri.conf.json` — they are how the app finds its own data directory.
+///
+/// ⚠️ RENAMING THE IDENTIFIER RENAMES THE DATA DIRECTORY, AND EVERY STORED
+/// IDENTITY, COMMUNITY AND SETTING LIVES IN THE OLD ONE. Measured 2026-09-29:
+/// before this change the branch below matched `xyz.block.buzz.app`, so a
+/// renamed app fell straight through to `None` — no migration at all. The
+/// consequence was worse than losing settings: `app_state.rs` gates
+/// keyring-locked recovery on an `identity.migrated` marker living in this
+/// directory, and its own comment reads a missing marker as "genuine
+/// first-ever launch … Generate". So an orphaned directory does not merely
+/// lose data, it MAKES THE APP MINT A NEW IDENTITY.
+const RELEASE_IDENTIFIER: &str = "VClawBuzz";
+
+/// ⚠️ THIS IS *NOT* THE REBRANDED NAME, AND THAT IS DELIBERATE.
+///
+/// `tauri.dev.conf.json` is DEAD CONFIG: tauri-cli loads `tauri.conf.json`, then ONE
+/// platform file chosen by TARGET (`tauri.macos`/`tauri.windows`/`tauri.linux`/...),
+/// then `--config` deltas. "dev" is not a target, so that file is loaded by nothing —
+/// changing it changes nothing. The live dev identifier is therefore STILL this one.
+///
+/// ⇒ So the dev discriminator must match THE IDENTIFIER THAT ACTUALLY EXISTS, or it
+/// answers "not a dev dir" for the only dev dir that can be on disk, and every
+/// consumer silently takes the production branch: a dev build would use the
+/// production nest, reset would branch the wrong way, and worktree identity sharing
+/// would stop without an error.
 const CANONICAL_DEV_IDENTIFIER: &str = "xyz.block.buzz.app.dev";
+
+/// Dev identifiers that may ALSO appear on disk. A directory from either era is a
+/// dev directory; the test must accept both, because both can exist at once.
+const OTHER_DEV_IDENTIFIERS: &[&str] = &["VClawBuzz.dev", "xyz.block.sprout.app.dev"];
+
+/// The identifiers this app used BEFORE the rebrand, newest first. An existing
+/// install is found by walking these, so a rename never strands its data.
+const LEGACY_RELEASE_IDENTIFIER_BUZZ: &str = "xyz.block.buzz.app";
+const LEGACY_CANONICAL_DEV_IDENTIFIER_BUZZ: &str = "xyz.block.buzz.app.dev";
 const LEGACY_CANONICAL_DEV_IDENTIFIER: &str = "xyz.block.sprout.app.dev";
 const LEGACY_RELEASE_IDENTIFIER: &str = "xyz.block.sprout.app";
 
@@ -46,10 +81,12 @@ const SHARED_AGENT_DIRS: &[&str] = &["agents/teams"];
 /// discriminator shared by `run_boot_migrations`, `sync_shared_agent_data`,
 /// and `reconcile_target_dir`.
 pub(crate) fn is_dev_data_dir_name(name: &str) -> bool {
-    name == CANONICAL_DEV_IDENTIFIER
-        || name
-            .strip_prefix(CANONICAL_DEV_IDENTIFIER)
-            .is_some_and(|rest| rest.starts_with('.'))
+    // The canonical dev identifier AND any other dev identifier this app has used.
+    std::iter::once(CANONICAL_DEV_IDENTIFIER)
+        .chain(OTHER_DEV_IDENTIFIERS.iter().copied())
+        .any(|id| {
+            name == id || name.strip_prefix(id).is_some_and(|rest| rest.starts_with('.'))
+        })
 }
 
 fn canonical_dev_data_dir(current: &Path) -> Option<PathBuf> {
@@ -59,9 +96,18 @@ fn canonical_dev_data_dir(current: &Path) -> Option<PathBuf> {
 pub(crate) fn legacy_app_data_dir(current: &Path) -> Option<PathBuf> {
     let name = current.file_name()?.to_str()?;
     let legacy_name = if name.starts_with(CANONICAL_DEV_IDENTIFIER) {
-        name.replacen(CANONICAL_DEV_IDENTIFIER, LEGACY_CANONICAL_DEV_IDENTIFIER, 1)
-    } else if name.starts_with("xyz.block.buzz.app") {
-        name.replacen("xyz.block.buzz.app", LEGACY_RELEASE_IDENTIFIER, 1)
+        // A dev dir keeps its worktree suffix: VClawBuzz.dev.my-branch -> xyz.block.buzz.app.dev.my-branch
+        name.replacen(CANONICAL_DEV_IDENTIFIER, LEGACY_CANONICAL_DEV_IDENTIFIER_BUZZ, 1)
+    } else if name == RELEASE_IDENTIFIER {
+        LEGACY_RELEASE_IDENTIFIER_BUZZ.to_owned()
+    } else if name.starts_with(LEGACY_CANONICAL_DEV_IDENTIFIER_BUZZ) {
+        name.replacen(
+            LEGACY_CANONICAL_DEV_IDENTIFIER_BUZZ,
+            LEGACY_CANONICAL_DEV_IDENTIFIER,
+            1,
+        )
+    } else if name.starts_with(LEGACY_RELEASE_IDENTIFIER_BUZZ) {
+        name.replacen(LEGACY_RELEASE_IDENTIFIER_BUZZ, LEGACY_RELEASE_IDENTIFIER, 1)
     } else {
         return None;
     };

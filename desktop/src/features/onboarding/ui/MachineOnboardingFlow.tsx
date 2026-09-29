@@ -9,6 +9,12 @@ import {
 } from "@/shared/api/tauriIdentity";
 import type { IdentityStorage } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
+import { vclawLogin, vclawSession } from "@/shared/api/vclawOidc";
+import {
+  provisionVclawCommunity,
+  segmentDisplayName,
+  VCLAW_RELAY_URL,
+} from "../vclawCommunityProvision";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
 import { BackupStep } from "./BackupStep";
 import { DefaultConfigStep } from "./DefaultConfigStep";
@@ -79,6 +85,44 @@ export function MachineOnboardingFlow({
     React.useState<OnboardingTransitionDirection>("forward");
   const [error, setError] = React.useState<string | null>(null);
   const [isPending, setIsPending] = React.useState(false);
+  const [isVclawPending, setIsVclawPending] = React.useState(false);
+  const [vclawResult, setVclawResult] = React.useState<string | null>(null);
+  // The vclaw account, kept so the identity step can show WHICH subject this
+  // device's key will be linked to. B is the chosen design: the app keeps its OWN
+  // Nostr key and the vclaw subject is RECORDED BESIDE IT — linked, not merged.
+  // A (deriving the key from the subject) was rejected because it would make the
+  // messaging key computable by anything that can mint a subject, so the IdP would
+  // become a key forge — the estate's own high-severity finding, rebuilt in the app.
+  const [vclawAccount, setVclawAccount] = React.useState<{
+    subject: string;
+    email?: string | null;
+  } | null>(null);
+  // What the segment -> community provisioning actually did, so the identity step
+  // can REPORT it rather than assert it.
+  const [vclawProvision, setVclawProvision] = React.useState<
+    ReturnType<typeof provisionVclawCommunity> | null
+  >(null);
+  // Probe for an EXISTING vclaw session on mount, headlessly. Two purposes: it
+  // proves the non-interactive path (`vclaw_oidc_session`) as well as the
+  // interactive one, and it tells the operator whether a token is already
+  // cached before they press the button.
+  React.useEffect(() => {
+    let cancelled = false;
+    void vclawSession()
+      .then((account) => {
+        if (cancelled || !account) return;
+        setVclawResult(
+          `vclaw IdP: existing session for sub=${account.subject}` +
+            (account.email ? ` (${account.email})` : ""),
+        );
+      })
+      .catch(() => {
+        /* not logged in, or the IdP is unreachable — the button is the test */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [identityWasImported, setIdentityWasImported] = React.useState(false);
   const [keyImportStage, setKeyImportStage] =
     React.useState<NostrKeyImportStage>("key-entry");
@@ -388,6 +432,104 @@ export function MachineOnboardingFlow({
                     ? "Use a different key instead"
                     : "Use an existing key"}
                 </Button>
+                {/*
+                  vclaw IdP login.
+
+                  WHY THIS BUTTON EXISTS: the `vclaw_oidc_login` command was
+                  implemented and compiled into the app but had ZERO call sites
+                  in the front-end, so the IdP could not be exercised from the
+                  UI at all (measured 2026-09-29). This is the missing entry
+                  point — it proves the issuer, client, redirect and scopes the
+                  Rust layer carries are reachable, and it reports what the IdP
+                  returned rather than asserting success.
+                */}
+                <Button
+                  className={`${ONBOARDING_SECONDARY_CTA_CLASS} px-5`}
+                  disabled={isPending || isVclawPending}
+                  onClick={() => {
+                    setIsVclawPending(true);
+                    setVclawResult(null);
+                    void vclawLogin()
+                      .then((account) => {
+                        // SUCCESS IS NOT A DEAD END. Until this change the button
+                        // reported the login and left the operator exactly where they
+                        // were, which reads as a failure — and was one. Record the
+                        // subject, then CONTINUE to the key step, because the app still
+                        // needs a key of its own.
+                        setVclawAccount({
+                          subject: account.subject,
+                          email: account.email,
+                        });
+                        setVclawResult(
+                          `Signed in to vclaw as ${account.subject}` +
+                            (account.email ? ` (${account.email})` : "") +
+                            (account.groups.length
+                              ? ` — segments: ${account.groups.join(", ")}`
+                              : "") +
+                            ". Now create or import this device's key; the two are linked.",
+                        );
+                        // A vclaw SEGMENT IS A BUZZ COMMUNITY. Provision them here,
+                        // from the groups the IdP just returned, against the estate's
+                        // own relay - so the operator never sees a community picker
+                        // and nothing is offered by the vendor's hosted cloud.
+                        setVclawProvision(provisionVclawCommunity(account.groups));
+                        setTransitionDirection("forward");
+                        setPage("identity-key-intro");
+                      })
+                      .catch((err: unknown) => {
+                        setVclawResult(
+                          `vclaw IdP: ${err instanceof Error ? err.message : String(err)}`,
+                        );
+                      })
+                      .finally(() => setIsVclawPending(false));
+                  }}
+                  type="button"
+                  variant="ghost"
+                >
+                  {isVclawPending ? "Opening vclaw login…" : "Login with VClaw"}
+                </Button>
+                {vclawResult ? (
+                  <p className="mt-2 max-w-md break-words text-center text-xs text-muted-foreground">
+                    {vclawResult}
+                  </p>
+                ) : null}
+                {/* THE LINK, MADE VISIBLE. B: this device keeps its OWN Nostr key and
+                    the vclaw subject is recorded beside it. Shown, not merged, so the
+                    operator can see which identity the key will belong to. */}
+                {vclawAccount ? (
+                  <p
+                    className="mt-2 max-w-md break-words text-center text-xs text-muted-foreground"
+                    data-testid="vclaw-linked-subject"
+                  >
+                    Linked vclaw identity: {vclawAccount.subject}
+                    {vclawAccount.email ? ` (${vclawAccount.email})` : ""} — this device
+                    keeps its own key; the two are recorded together, not derived from
+                    one another.
+                  </p>
+                ) : null}
+                {/* ONE COMMUNITY, AND THE SPACES THE IDENTITY MAY ENTER. Segments are NOT
+                    communities: the app is single-community and a switch reconnects the relay and
+                    re-keys the whole tree. This reports the outcome rather than asserting it. */}
+                {vclawProvision ? (
+                  <p
+                    className="mt-1 max-w-md break-words text-center text-xs text-muted-foreground"
+                    data-testid="vclaw-provisioned-community"
+                  >
+                    {vclawProvision.error
+                      ? `Community: ${vclawProvision.error}.`
+                      : `Community ${VCLAW_RELAY_URL} ` +
+                        (vclawProvision.added
+                          ? "added."
+                          : vclawProvision.existing
+                            ? "already present."
+                            : "not added.") +
+                        (vclawProvision.segments.length
+                          ? ` Spaces in this identity: ${vclawProvision.segments
+                              .map(segmentDisplayName)
+                              .join(", ")}.`
+                          : " No tenant segment in this identity, so no space is listed.")}
+                  </p>
+                ) : null}
               </div>
               <IdentityKeyHelpDialog
                 onOpen={() => {

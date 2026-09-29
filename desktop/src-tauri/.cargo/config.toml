@@ -1,0 +1,17 @@
+# Build natively for Apple silicon by default.
+#
+# WHY THIS FILE EXISTS — measured 2026-09-29 on this workstation:
+#   * the Rust toolchain installed here (rustup, cargo, rustc) is an x86_64 build running under Rosetta,
+#     so `rustup show` reports `Default host: x86_64-apple-darwin` and a plain build produces an INTEL app;
+#   * the Tauri bundler then names the disk image `aarch64` anyway, because the filename comes from the
+#     bundle config rather than from the compiled binary — an Intel app under an arm64 name;
+#   * `rustup default <an aarch64 toolchain>` is REFUSED, because the x86_64 rustup believes an aarch64
+#     toolchain "may not be able to run on this system". The hardware is arm64; the tool is what is wrong.
+#
+# A target default is the smallest fix that needs no flag and no toolchain surgery, and it makes
+# `pnpm tauri:build` produce a native artefact for everyone who builds this repo.
+#
+# VERIFY ANY BUILD WITH THE TOOL, NEVER THE FILENAME:
+#   lipo -info src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Buzz.app/Contents/MacOS/buzz-desktop
+[build]
+target = "aarch64-apple-darwin"

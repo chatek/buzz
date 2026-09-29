@@ -1,4 +1,5 @@
 {
   "identifier": "xyz.block.buzz.app.dev",
-  "productName": "Buzz Dev"
+  "productName": "Buzz Dev",
+  "$comment_DEAD_CONFIG": "NOT LOADED BY ANYTHING. tauri-cli loads tauri.conf.json, then ONE platform file chosen by TARGET (tauri.macos/windows/linux/android/ios), then --config deltas. 'dev' is not a target, so this file is never read - by tauri dev, tauri build, or any script in this tree. The live dev identifier is xyz.block.buzz.app.dev, set in tauri.conf.json's defaults. Editing this file changes nothing. To make it live, pass it explicitly: --config tauri.dev.conf.json"
 }
