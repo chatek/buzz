@@ -461,6 +461,25 @@ pub struct PkceOAuthTokenSource {
     /// lock serializes slow-path work; this cell keeps the fast path off disk
     /// during a turn and off the lock entirely.
     state: Mutex<Option<CachedToken>>,
+    /// The OIDC `id_token` from the most recent token response — **MEMORY ONLY**.
+    ///
+    /// vgate's human gate accepts only a JWT signed by Authelia (verified against
+    /// its JWKS, `exp`/`aud`/`iss` checked), and the access token this engine
+    /// caches is **opaque** — no Authelia client has the JWT access-token profile
+    /// enabled — so this is the ONLY credential that can carry a human identity to
+    /// a control endpoint.
+    ///
+    /// It is deliberately **not** a field of `CachedToken`: that type derives
+    /// `Serialize, Deserialize` and `persist()` writes it to disk, which would turn
+    /// a cache of a re-mintable token into a permanent second secret at rest that
+    /// unlocks the whole human-gated control surface. This holder is never
+    /// serialized; a restart reads `None` and re-authenticates (accepted cost).
+    ///
+    /// Populated at BOTH token-response sites (the browser grant and `refresh`) —
+    /// a refresh granted with `openid` in scope returns a fresh `id_token`, so if
+    /// the refresh path stops storing it the app silently loses control and the
+    /// symptom reads as flaky authorization.
+    id_token: Mutex<Option<String>>,
 }
 
 impl PkceOAuthTokenSource {
@@ -562,7 +581,24 @@ impl PkceOAuthTokenSource {
             loopback,
             opener,
             state: Mutex::new(initial),
+            id_token: Mutex::new(None),
         }))
+    }
+
+    /// The credential for a **HUMAN-gated** endpoint (vgate's control surface:
+    /// `/v1/agent/{nkey}/configure`, `/retire`, `/v1/fleet`, `/v1/agent/pending`,
+    /// `/v1/segment`) — i.e. the OIDC `id_token` of the human who logged in.
+    ///
+    /// `None` means this engine has not seen an `id_token`: a client that did not
+    /// request `openid`, or a process that started after a restart (the token is
+    /// memory-only by design — see the field).
+    ///
+    /// **Callers MUST treat `None` as "re-authenticate", and MUST NOT fall back to
+    /// the access token:** vgate's validator requires a JWS (`len(parts) == 3` +
+    /// JWKS signature) and this engine's access token is opaque, so the fallback
+    /// is a guaranteed 401 that looks like an authorization problem.
+    pub async fn human_bearer(&self) -> Option<String> {
+        self.id_token.lock().await.clone()
     }
 
     /// Path of the cross-process advisory lock file guarding slow-path auth
@@ -831,6 +867,10 @@ impl PkceOAuthTokenSource {
                 return RefreshOutcome::Network;
             }
         };
+        // Site A of 2: a refresh granted with `openid` in scope returns a FRESH
+        // id_token, so the memory-only holder must be updated here as well — if
+        // this line is ever removed the app loses control at the first refresh.
+        *self.id_token.lock().await = v.get("id_token").and_then(Value::as_str).map(str::to_string);
         match token_from_response(&v, Some(refresh_token)) {
             Ok(token) => RefreshOutcome::Refreshed(token),
             Err(e) => {
@@ -1391,7 +1431,11 @@ impl PkceOAuthTokenSource {
         match outcome {
             // `finish` clears the cooldown on success and rejects a re-issued
             // 401'd token before persisting it.
-            Ok(fresh) => {
+            Ok((fresh, id_token)) => {
+                // Store the human credential BEFORE `finish` persists the cache:
+                // it is memory-only (see the field's doc) and this caller is the
+                // one place that owns `self` on the browser-flow path.
+                *self.id_token.lock().await = id_token;
                 let result = self.finish(&mut state, fresh, intent, rejected);
                 let code = match &result {
                     Ok(_) => "ok",
@@ -2229,7 +2273,7 @@ async fn browser_pkce_flow(
     endpoints: &OidcEndpoints,
     opener: &dyn BrowserOpener,
     loopback: &PkceLoopbackConfig,
-) -> Result<CachedToken, AuthError> {
+) -> Result<(CachedToken, Option<String>), AuthError> {
     use axum::{extract::Query, response::Html, routing::get, Router};
     use std::collections::HashMap;
     use std::net::SocketAddr;
@@ -2349,7 +2393,12 @@ async fn browser_pkce_flow(
     let v = read_oauth_json(resp)
         .await
         .map_err(|_| AuthError::NetworkUnavailable)?;
-    token_from_response(&v, None).map_err(|_| AuthError::NetworkUnavailable)
+    // Site B of 2: this free function has no `self`, so the human credential is
+    // RETURNED alongside the cached token and stored by the caller (which owns
+    // `self`) BEFORE `finish()` persists anything.
+    let id_token = v.get("id_token").and_then(Value::as_str).map(str::to_string);
+    let token = token_from_response(&v, None).map_err(|_| AuthError::NetworkUnavailable)?;
+    Ok((token, id_token))
 }
 
 #[cfg(test)]
