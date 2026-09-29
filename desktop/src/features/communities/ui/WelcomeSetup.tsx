@@ -30,12 +30,29 @@ type WelcomeSetupProps = {
 const COMMUNITY_OPTION_CARD_CLASS =
   "w-full max-w-[320px] items-center px-6 py-4 text-center text-sm font-normal leading-6 text-foreground [--buzz-card-textured-min-height:88px] transition-[filter] duration-150 ease-out hover:brightness-[0.98] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-foreground/35";
 
+// The community picker is a GATE, not a CSS hide — see the SPRINT-1 marker above the hidden picker
+// block below for what is hidden, why, and what a later sprint must restore. This constant and the
+// two guards that read it (the initial-page normaliser and showPage) are that gate.
+const VCLAW_SPRINT_1_PICKER_HIDDEN = true;
+const VCLAW_SPRINT_1_HIDDEN_PAGES: ReadonlySet<WelcomeSetupPage> = new Set([
+  "join",
+  "existing",
+  "owned",
+  "member",
+]);
+
 export function WelcomeSetup({
   initialPage = "welcome",
   initialTransitionMode = "initial",
   onBack,
 }: WelcomeSetupProps) {
-  const [page, setPage] = React.useState<WelcomeSetupPage>(initialPage);
+  // A resumed page (resumeFirstCommunityPage / a deep link) must not open a hidden route even
+  // though nothing rendered a card for it — half of the SPRINT-1 gate.
+  const [page, setPage] = React.useState<WelcomeSetupPage>(
+    VCLAW_SPRINT_1_PICKER_HIDDEN && VCLAW_SPRINT_1_HIDDEN_PAGES.has(initialPage)
+      ? "welcome"
+      : initialPage,
+  );
   const [transitionMode, setTransitionMode] =
     React.useState<WelcomeTransitionMode>(initialTransitionMode);
   // While true, the Builderlab sign-in modal floats over the current page —
@@ -57,6 +74,14 @@ export function WelcomeSetup({
 
   const showPage = React.useCallback(
     (nextPage: WelcomeSetupPage, direction?: OnboardingTransitionDirection) => {
+      // THE choke point of the SPRINT-1 gate: every card, deep link and callback routes through
+      // here, so refusing the hidden pages once covers all of them.
+      if (
+        VCLAW_SPRINT_1_PICKER_HIDDEN &&
+        VCLAW_SPRINT_1_HIDDEN_PAGES.has(nextPage)
+      ) {
+        return;
+      }
       setTransitionMode(
         direction ?? (nextPage === "welcome" ? "backward" : "forward"),
       );
@@ -135,13 +160,29 @@ export function WelcomeSetup({
             >
               <div className="w-full max-w-[760px]">
                 <h1 className="text-title font-normal">
-                  Join or create a community
+                  {VCLAW_SPRINT_1_PICKER_HIDDEN
+                    ? "Sign in to join the estate community"
+                    : "Join or create a community"}
                 </h1>
                 <p className="mt-3 text-sm leading-6 text-foreground/80">
-                  Join with an invite, create your own community, or reconnect
-                  one you already have.
+                  {VCLAW_SPRINT_1_PICKER_HIDDEN
+                    ? "This build joins the vclaw estate's own community when you sign in with VClaw. Use Back to sign in."
+                    : "Join with an invite, create your own community, or reconnect one you already have."}
                 </p>
               </div>
+              {/* VCLAW-SPRINT-1 HIDDEN — the community picker, and the ONE marker for it in this file.
+                  WHAT: the three options (Join a community / Create a community / I already have a
+                  community), plus the pages they open (join, existing, owned, member — the last being
+                  the raw relay-entry page).
+                  WHY: Create and I-own route to the VENDOR's hosted cloud (communities.buzz.xyz) and
+                  the vclaw login already provisions the estate's one community; Join shows this
+                  device's public ID and asks a human owner to add it, and there is no such owner here;
+                  a free-text relay entry cannot reach the estate.
+                  UNREACHABLE, NOT MERELY INVISIBLE: not rendered here, AND their routes are refused by
+                  the SPRINT-1 gate (VCLAW_SPRINT_1_PICKER_HIDDEN) at the initial-page normaliser and
+                  at showPage, so a card, a resumed page or a future caller cannot land on them.
+                  RESTORE: set the constant false; the options and pages are intact in source. */}
+              {VCLAW_SPRINT_1_PICKER_HIDDEN ? null : (
               <div className="flex w-full flex-1 translate-y-16 flex-col items-center justify-center gap-20 py-8">
                 <Card
                   asChild
@@ -183,6 +224,7 @@ export function WelcomeSetup({
                   </button>
                 </Card>
               </div>
+              )}
             </OnboardingSlideTransition>
           ) : page === "existing" ? (
             <OnboardingSlideTransition
