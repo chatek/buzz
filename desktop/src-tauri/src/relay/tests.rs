@@ -642,3 +642,63 @@ fn profile_event_rejects_invalid_auth_tag() {
         "error message should mention verification failure"
     );
 }
+
+
+// ── /query row contract: every served row must carry its signature ────────
+//
+// 2026-10-01 username-step failure (operator-blocked at the profile screen):
+// the vclaw gateway's Postgres read model did not persist the `sig` field,
+// so every stored row answered POST /query 200 with `"sig":""`. This parse
+// (the `Vec<nostr::Event>` target of `query_relay` -> `parse_json_response`)
+// rejects the WHOLE response on that one field, surfacing to the user as the
+// opaque "relay returned malformed response: not valid JSON" while the relay
+// logs a healthy 200. nostr's error names the field ("malformed signature").
+//
+// Pinned across the wire by the gateway side: buzz-gateway
+// internal/api TestAuthorPlaneRowCarriesSignature + internal/readmodel
+// TestProjectServesSignature (same row, sig filled). The without-sig shape
+// below is the captured pre-fix wire form (a 295-byte row for this content;
+// the operator's nginx log showed three 365-byte bodies = the same shape
+// with a 149-byte escaped content).
+
+fn gateway_row(sig: &str) -> String {
+    serde_json::json!({
+        "id": "a".repeat(64),
+        "pubkey": "b".repeat(64),
+        "created_at": 1759303476_u64,
+        "kind": 0_u64,
+        "tags": [],
+        "content": r#"{"name":"c","about":"","picture":"","display_name":"c"}"#,
+        "sig": sig,
+    })
+    .to_string()
+}
+
+#[test]
+fn query_row_without_signature_is_rejected_by_nostr_parse() {
+    let body = format!("[{}]\n", gateway_row(""));
+    let err = serde_json::from_str::<Vec<nostr::Event>>(&body)
+        .expect_err("an empty sig must fail nostr Event deserialization");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("signature"),
+        "error should name the signature field, got: {err}"
+    );
+    // The user-visible sentence this becomes (relay.rs parse_json_response):
+    // MALFORMED_RESPONSE_MESSAGE. It must NOT be classified "relay
+    // unreachable:" — the relay answered 200.
+    assert!(!MALFORMED_RESPONSE_MESSAGE.starts_with("relay unreachable:"));
+}
+
+#[test]
+fn query_row_with_signature_parses() {
+    // Same row, sig filled with 128 hex (the gateway fix persists and serves
+    // the author signature; the hex pair is the reproduction's control sig).
+    let sig = format!("{}{}", "a".repeat(64), "a".repeat(64));
+    let body = format!("[{}]\n", gateway_row(&sig));
+    let events = serde_json::from_str::<Vec<nostr::Event>>(&body)
+        .expect("a row with its signature must parse");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind.as_u16(), 0);
+    assert_eq!(events[0].sig.to_string(), sig);
+}
