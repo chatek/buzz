@@ -214,7 +214,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "python3 -m http.server 4173 -d dist",
+    // Threaded server: the stock `python3 -m http.server` is SINGLE-THREADED, so one
+    // in-flight request blocks every other one. That head-of-line blocking is what produced the
+    // config-bridge:250 "chat-title not found in 5s" flake (snapshot = ViewLoadingFallback
+    // kind="channel" for a 2,960-byte lazy chunk). Not a timeout change - a harness fix.
+    command: "python3 tests/static-server.py 4173 dist",
     cwd: ".",
     reuseExistingServer: !process.env.CI,
     url: "http://127.0.0.1:4173",
