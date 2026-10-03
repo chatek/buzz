@@ -404,20 +404,30 @@ test("[auth-bind A4] a revoked device and an unreachable service are DIFFERENT s
 
   const notice = page.getByTestId("vclaw-bind-notice");
   await expect(notice).toHaveAttribute("data-state", "revoked");
+  await expect(notice).toHaveAttribute("data-reason", "device_revoked");
   const revokedTitle = await page
     .getByTestId("vclaw-bind-notice-title")
+    .innerText();
+  const revokedBody = await page
+    .getByTestId("vclaw-bind-notice-body")
     .innerText();
   // The revoked state says what to do about it, and it is not the same thing as waiting for a
   // service: the retry is a SIGN-IN, which is what the copy promises.
   await expect(page.getByTestId("vclaw-bind-retry")).toHaveText(
     "Sign in again",
   );
-  // NEGATIVE CONTROL: the surface must not blame the IdP for the estate's refusal (the wrong-layer
-  // failure the pitfall log carries), and its heading is its own.
+  // THE CAUSE IS NAMED, in the body — where the copy puts the reason ("The binding for this device
+  // was revoked"). The HEADING is the action ("signed out of your account"), and asserting on the two
+  // SEPARATELY is what keeps this honest: a first version of this test pinned "revoked" to the title
+  // and failed, because the copy deliberately leads with what happened to the person, not with the
+  // estate's word for it.
+  expect(revokedBody).toContain("revoked");
+  // NEGATIVE CONTROL: it is NOT the unreachable-service surface, and it must not blame the IdP for a
+  // refusal the account service made (the wrong-layer failure the pitfall log carries).
+  expect(revokedTitle).not.toContain("unreachable");
   const gateText = await page
     .getByTestId("machine-onboarding-gate")
     .innerText();
   expect(gateText).not.toContain("vclaw IdP");
-  expect(revokedTitle).toContain("revoked");
   await expect(page.getByTestId("app-sidebar")).toHaveCount(0);
 });
