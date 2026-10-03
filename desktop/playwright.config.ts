@@ -28,6 +28,7 @@ export default defineConfig({
         "**/onboarding-docked-cta-screenshots.spec.ts",
         "**/identity-key-help.spec.ts",
         "**/vclaw-signin-only.spec.ts",
+        "**/vclaw-bind.spec.ts",
         "**/exact-key-profile.spec.ts",
         "**/key-import-reveal.spec.ts",
         "**/navigation.spec.ts",

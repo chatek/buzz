@@ -870,7 +870,10 @@ impl PkceOAuthTokenSource {
         // Site A of 2: a refresh granted with `openid` in scope returns a FRESH
         // id_token, so the memory-only holder must be updated here as well — if
         // this line is ever removed the app loses control at the first refresh.
-        *self.id_token.lock().await = v.get("id_token").and_then(Value::as_str).map(str::to_string);
+        *self.id_token.lock().await = v
+            .get("id_token")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         match token_from_response(&v, Some(refresh_token)) {
             Ok(token) => RefreshOutcome::Refreshed(token),
             Err(e) => {
@@ -2396,7 +2399,10 @@ async fn browser_pkce_flow(
     // Site B of 2: this free function has no `self`, so the human credential is
     // RETURNED alongside the cached token and stored by the caller (which owns
     // `self`) BEFORE `finish()` persists anything.
-    let id_token = v.get("id_token").and_then(Value::as_str).map(str::to_string);
+    let id_token = v
+        .get("id_token")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let token = token_from_response(&v, None).map_err(|_| AuthError::NetworkUnavailable)?;
     Ok((token, id_token))
 }

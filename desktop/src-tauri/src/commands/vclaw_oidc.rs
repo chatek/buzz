@@ -173,7 +173,7 @@ fn vclaw_config() -> PkceOAuthConfig {
 /// parked in `AppState`. The cache is keyed by
 /// `sha256(discovery_url|client_id|scopes)`, so a scope change signs everyone
 /// out once — which is the intended behavior, not a bug to work around.
-fn vclaw_source(app: AppHandle) -> Result<Arc<PkceOAuthTokenSource>, String> {
+pub(crate) fn vclaw_source(app: AppHandle) -> Result<Arc<PkceOAuthTokenSource>, String> {
     let loopback = PkceLoopbackConfig::new(
         VCLAW_REDIRECT_HOST,
         VCLAW_REDIRECT_PATH,

@@ -959,6 +959,12 @@ test("a completed estate sign-in continues directly into profile onboarding", as
 
   // ORDER MATTERS: `installMockBridge` installs the IPC transport itself, so the scripted IdP is
   // wrapped around it afterwards (same boundary tests/e2e/vclaw-signin-only.spec.ts crosses).
+  //
+  // THE DEVICE BINDING IS SCRIPTED HERE TOO (job A1 of docs/AUTH_BIND_PLAN.md). The sign-in sequence
+  // now crosses `vclaw_bind_principal_device` between the device key and the estate community, and a
+  // bind that does not succeed STOPS the sequence (A2) — so a spec that wants the sign-in to complete
+  // has to answer it, exactly as it answers the IdP. The bind's own states are covered by
+  // tests/e2e/vclaw-bind.spec.ts; here a bound answer is all this walk needs.
   await page.evaluate((account: typeof vclawAccount) => {
     const testWindow = window as typeof window & {
       __TAURI_INTERNALS__: {
@@ -970,10 +976,20 @@ test("a completed estate sign-in continues directly into profile onboarding", as
       command: string,
       args?: unknown,
       options?: unknown,
-    ) =>
-      command === "vclaw_oidc_login" || command === "vclaw_oidc_session"
-        ? Promise.resolve(command === "vclaw_oidc_login" ? account : null)
-        : original(command, args, options);
+    ) => {
+      if (command === "vclaw_oidc_login" || command === "vclaw_oidc_session") {
+        return Promise.resolve(command === "vclaw_oidc_login" ? account : null);
+      }
+      if (command === "vclaw_bind_principal_device") {
+        return Promise.resolve({
+          outcome: "bound",
+          status: 201,
+          idempotent: false,
+          npub: "deadbeef".repeat(8),
+        });
+      }
+      return original(command, args, options);
+    };
   }, vclawAccount);
 
   // THE GATE, before the door: the landing offers the sign-in and NO key control.

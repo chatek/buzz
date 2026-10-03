@@ -71,6 +71,7 @@ mod team_snapshot;
 mod teams;
 mod updater;
 mod vclaw_oidc;
+mod vclaw_principal_bind;
 mod vclaw_sign_out;
 mod window_chrome;
 mod window_vibrancy;
@@ -131,6 +132,7 @@ pub use team_snapshot::*;
 pub use teams::*;
 pub use updater::*;
 pub use vclaw_oidc::*;
+pub use vclaw_principal_bind::*;
 // The sign-out REPORT crosses the IPC boundary through the command's OWN signature
 // (`-> Result<VclawSignOutReport, String>` in vclaw_oidc.rs), so no re-export belongs here: in a binary
 // crate a `pub use` reaches nobody, and rustc reported exactly that.

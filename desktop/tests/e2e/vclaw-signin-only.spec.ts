@@ -176,6 +176,21 @@ async function stubVclawIdp(page: Page, account = VCLAW_ACCOUNT) {
         w.__BUZZ_E2E_COMMAND_PAYLOADS__?.push({ command });
         return Promise.resolve(command === "vclaw_oidc_login" ? account : null);
       }
+      // THE DEVICE BINDING IS PART OF THIS SEQUENCE NOW (job A1, `docs/AUTH_BIND_PLAN.md`), and a
+      // bind that does not succeed STOPS the sign-in (A2). So this stub answers it the way it
+      // answers the IdP: scripted at the same boundary, with a bound report. The bind's OWN states
+      // — refusal, revocation, an unreachable endpoint — are covered by
+      // `tests/e2e/vclaw-bind.spec.ts`, which is where they belong.
+      if (command === "vclaw_bind_principal_device") {
+        w.__BUZZ_E2E_COMMANDS__?.push(command);
+        w.__BUZZ_E2E_COMMAND_PAYLOADS__?.push({ command });
+        return Promise.resolve({
+          outcome: "bound",
+          status: 201,
+          idempotent: false,
+          npub: "deadbeef".repeat(8),
+        });
+      }
       return original(command, args, options);
     };
   }, account);

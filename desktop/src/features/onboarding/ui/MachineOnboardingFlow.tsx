@@ -20,6 +20,8 @@ import {
   VclawSignInFailure,
 } from "../vclawSignIn";
 import type { OrgVerdict } from "../vclawOrg";
+import type { VclawBindReport } from "@/shared/api/vclawPrincipalBind";
+import { VclawBindNotice } from "./VclawBindNotice";
 import { VclawOrgField } from "./VclawOrgField";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
 import { BackupStep } from "./BackupStep";
@@ -148,6 +150,17 @@ export function MachineOnboardingFlow({
   const [isPending, setIsPending] = React.useState(false);
   const [isVclawPending, setIsVclawPending] = React.useState(false);
   const [vclawResult, setVclawResult] = React.useState<string | null>(null);
+  // THE DEVICE BINDING REPORT (jobs A1/A2). `null` before an attempt and while one is in flight;
+  // `bound` after a sign-in that succeeded — the notice renders nothing for it, because a success is
+  // not an error surface. Any OTHER state is the reason this screen is still on screen, and
+  // `VclawBindNotice` is what says so out loud instead of mounting an empty app.
+  const [vclawBind, setVclawBind] = React.useState<VclawBindReport | null>(
+    null,
+  );
+  // The org of the LAST attempt, so the failure surface's retry re-runs the sequence with the same
+  // org the person chose. `VclawOrgField` owns its own field state, so the value cannot be read back
+  // out of it; this is the same string that was handed to `signInWithVclaw`.
+  const lastOrgRef = React.useRef<string>("vclaw");
   // The vclaw account, kept so the identity step can show WHICH subject this
   // device's key will be linked to. B is the chosen design: the app keeps its OWN
   // Nostr key and the vclaw subject is RECORDED BESIDE IT — linked, not merged.
@@ -270,13 +283,19 @@ export function MachineOnboardingFlow({
   // community-setup screen through `vclawSignIn.ts`: the IdP, then THE ESTATE'S ANSWER TO THE ORG
   // the human entered (a miss stops there, before the community is provisioned), then the device key
   // the Rust layer ALREADY holds (the log line "generated and saved identity pubkey" is that key
-  // being made at boot, never by this handler), then the estate community, then the subject recorded
-  // beside the key. NO key page is shown, and the human never creates, imports, backs up or
-  // confirms a key.
+  // being made at boot, never by this handler), then THE DEVICE BINDING that lets the relay
+  // authorise that key (job A1 — a failure stops the sequence before anything authorised is asked
+  // for), then the estate community, then the subject recorded beside the key. NO key page is shown,
+  // and the human never creates, imports, backs up or confirms a key (A3).
+  //
+  // The SAME handler is what the failure surface's retry button calls: one attempt, one bind, no
+  // loop. It re-reads the same org from `lastOrgRef`, so a retry cannot silently switch orgs.
   const signInWithVclawAndContinue = React.useCallback(async (org: string) => {
+    lastOrgRef.current = org;
     setIsVclawPending(true);
     setVclawResult(null);
     setVclawOrg(null);
+    setVclawBind(null);
     setVclawSettled(null);
     completedSignInRef.current = false;
     setError(null);
@@ -284,6 +303,7 @@ export function MachineOnboardingFlow({
       const {
         account,
         identity,
+        bind,
         provision,
         link,
         org: grantedOrg,
@@ -291,6 +311,9 @@ export function MachineOnboardingFlow({
       setVclawAccount({ subject: account.subject, email: account.email });
       setVclawProvision(provision);
       setVclawOrg(grantedOrg);
+      // `bound` is the only state that reaches here; recording it keeps the notice's own gate (it
+      // renders nothing for `bound`) the single place that decides what a success looks like.
+      setVclawBind(bind);
       setVclawResult(
         `Signed in to vclaw as ${account.subject}` +
           (account.email ? ` (${account.email})` : "") +
@@ -305,14 +328,21 @@ export function MachineOnboardingFlow({
     } catch (cause) {
       // THE STOP IS REPORTED WHERE THE FIELD IS, AND IT NAMES THE RIGHT LAYER: an org the estate
       // does not grant is not an IdP error, and saying "vclaw IdP" here would send the reader to the
-      // issuer when the CLAIM was what said no. Nothing was provisioned and no key was touched, so
-      // the app stays exactly where it was — signed out of the estate.
+      // issuer when the CLAIM was what said no. A bind the estate refused is neither, and it has its
+      // own surface (`VclawBindNotice`) with its own state. Nothing was provisioned and no key was
+      // touched, so the app stays exactly where it was — signed out of the estate, and NOT mounted
+      // into an empty shell that would look like an estate with nothing in it.
       const stopped = cause instanceof VclawSignInFailure ? cause : null;
       setVclawOrg(stopped?.verdict ?? null);
-      // An ORG refusal IS the estate's answer, so it renders as the verdict and is NOT repeated as a
-      // second sentence: the same reason stated twice reads as two problems.
+      // A BIND failure is a report, not a sentence: the notice renders the state, the reason code
+      // and the retry, so repeating it as `vclawResult` would state one problem twice.
+      setVclawBind(stopped?.stage === "bind" ? stopped.bind : null);
+      // An ORG refusal IS the estate's answer, and a BIND failure has its own surface, so neither is
+      // repeated as a second sentence: the same reason stated twice reads as two problems.
       setVclawResult(
-        stopped?.stage === "org" ? null : describeVclawSignInFailure(cause),
+        stopped?.stage === "org" || stopped?.stage === "bind"
+          ? null
+          : describeVclawSignInFailure(cause),
       );
       setIsVclawPending(false);
     }
@@ -617,6 +647,19 @@ export function MachineOnboardingFlow({
                               : "not added.")}
                     </p>
                   ) : null}
+                  {/* THE FAILED DEVICE BINDING (A2/A4), and the reason this screen is still here.
+                      While this notice is rendered the sign-in has NOT completed, so the app is
+                      never mounted into a shell whose relay requests the estate would refuse — the
+                      state A2 calls "a silently empty app", indistinguishable from an empty estate.
+                      One notice, one state, one retry; `VclawBindNotice` renders nothing for
+                      `bound`. */}
+                  <VclawBindNotice
+                    onRetry={() => {
+                      void signInWithVclawAndContinue(lastOrgRef.current);
+                    }}
+                    pending={isVclawPending}
+                    report={vclawBind}
+                  />
                 </VclawOrgField>
                 {/* VCLAW-SIGN-IN-ONLY HIDDEN — the upstream login methods, and the ONE marker for
                     them in this file.

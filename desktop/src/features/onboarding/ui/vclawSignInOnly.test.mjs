@@ -108,6 +108,18 @@ globalThis.__TAURI_INTERNALS__ = {
       case "vclaw_oidc_login":
         signedIn += 1;
         return Promise.resolve(idpAccount);
+      case "vclaw_bind_principal_device":
+        // THE SEQUENCE GREW A STEP (job A1, `docs/AUTH_BIND_PLAN.md`): the device binding now sits
+        // between the device key and the community, so this file has to script it at the same IPC
+        // boundary it already scripts the IdP at. A BOUND answer only — this file's claims are about
+        // which PAGES the sign-in renders, and the bind's own failure states are covered by
+        // `vclawBindGate.test.mjs`.
+        return Promise.resolve({
+          outcome: "bound",
+          status: 201,
+          idempotent: false,
+          npub: DEVICE_PUBKEY,
+        });
       default:
         return Promise.reject(new Error(`unmocked: ${command}`));
     }

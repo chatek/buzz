@@ -2,9 +2,14 @@ import { getIdentity } from "@/shared/api/tauriIdentity";
 import type { Identity } from "@/shared/api/types";
 import { vclawLogin, type VclawOidcAccount } from "@/shared/api/vclawOidc";
 import {
+  bindVclawPrincipalDevice,
+  type VclawBindReport,
+} from "@/shared/api/vclawPrincipalBind";
+import {
   provisionVclawCommunity,
   type ProvisionResult,
 } from "./vclawCommunityProvision";
+import { describeVclawBindFailure } from "./lib/vclawBindCopy";
 import {
   type OrgVerdict,
   validateOrgEntry,
@@ -43,9 +48,16 @@ import {
  *      hands it back as an implementation detail of the relay. This call ASKS FOR IT; it never asks
  *      the human to create, import, back up or confirm one. That is the whole correction: the key
  *      already existed, the UI was making it a step.
- *   4. `provisionVclawCommunity()` — the estate community, from the IdP's segment groups, so the
+ *   4. `bindVclawPrincipalDevice()` — THE DEVICE BINDING, and it sits HERE (job A1,
+ *      `docs/AUTH_BIND_PLAN.md`) for a reason that is not stylistic: the relay authorises by npub,
+ *      so the first authorised request this app makes is the one that needs the row. Binding after
+ *      the community is provisioned or after the app mounts would race the app's own refusal, and
+ *      the loser of that race is the person, looking at an empty shell. A failure stops the sequence
+ *      here, loudly, and NOTHING below runs — including the handoff that mounts the app, which is
+ *      what A2 means by "never a silently empty app".
+ *   5. `provisionVclawCommunity()` — the estate community, from the IdP's segment groups, so the
  *      operator never sees a community picker. Persists directly (see the note in useCommunities).
- *   5. `writeVclawLink()` — the vclaw SUBJECT recorded BESIDE the device key, linked, not merged.
+ *   6. `writeVclawLink()` — the vclaw SUBJECT recorded BESIDE the device key, linked, not merged.
  *      Design B, stated in MachineOnboardingFlow's identity step: the app keeps its OWN Nostr key
  *      and the subject is recorded next to it. Deriving the key FROM the subject was rejected
  *      because it would make the messaging key computable by anything that can mint a subject,
@@ -79,6 +91,12 @@ export type VclawSignInResult = {
   account: VclawOidcAccount;
   /** The device key the app already holds — never created by this call. */
   identity: Identity;
+  /**
+   * The device binding, and it is `state: "bound"` here by construction: any other state STOPPED
+   * the sequence with [`VclawSignInFailure`]. It is returned rather than asserted so a caller can
+   * report WHAT the estate did — and whether the row already existed (`idempotent`).
+   */
+  bind: VclawBindReport;
   provision: ProvisionResult;
   /** `null` when the link could not be persisted; the sign-in still stands. */
   link: VclawLink | null;
@@ -91,21 +109,30 @@ export type VclawSignInResult = {
  *
  * `stage` exists so no caller has to guess: an org refusal reported as `vclaw IdP: ...` sends the
  * reader to the IdP when the claim was the thing that said no — the same wrong-layer message the
- * project's pitfall log already carries. `verdict` carries the estate's answer when there is one.
+ * project's pitfall log already carries. `verdict` carries the estate's answer when there is one,
+ * and `bind` carries the device-binding report when the BIND is what stopped the sign-in.
+ *
+ * ⚠ `"bind"` IS A SEPARATE STAGE FROM `"idp"` ON PURPOSE. "The IdP was unreachable" and "the estate
+ * refused to bind this device" have different causes and different next steps, and collapsing them
+ * would send a person to the wrong place — which is exactly what A4 forbids.
  */
 export class VclawSignInFailure extends Error {
-  readonly stage: "org" | "idp";
+  readonly stage: "org" | "idp" | "bind";
   readonly verdict: OrgVerdict | null;
+  /** The binding report, for stage `"bind"`; `null` for every other stage. */
+  readonly bind: VclawBindReport | null;
 
   constructor(
-    stage: "org" | "idp",
+    stage: "org" | "idp" | "bind",
     message: string,
     verdict: OrgVerdict | null = null,
+    bind: VclawBindReport | null = null,
   ) {
     super(message);
     this.name = "VclawSignInFailure";
     this.stage = stage;
     this.verdict = verdict;
+    this.bind = bind;
   }
 }
 
@@ -175,12 +202,25 @@ export function writeVclawLink(
 
 /**
  * Complete a vclaw sign-in for ONE org: IdP, then the estate's answer to that org, then the device
- * key, then the estate community, then the link.
+ * key, then the DEVICE BINDING, then the estate community, then the link.
  *
- * Throws `VclawSignInFailure` when the entry is not well formed, when the IdP fails, or — the case
- * that matters — when the estate's claim does not grant the entered org. The caller renders
- * `describeVclawSignInFailure(cause)` and must not progress. The provisioning result is RETURNED
- * rather than asserted, so a caller can report it.
+ * Throws `VclawSignInFailure` when the entry is not well formed, when the IdP fails, when the
+ * estate's claim does not grant the entered org, or when the estate refuses to bind this device.
+ * The caller renders the failure and must not progress. The provisioning result is RETURNED rather
+ * than asserted, so a caller can report it.
+ *
+ * ── A1: ONCE PER SIGN-IN, IDEMPOTENTLY, BEFORE THE FIRST AUTHORISED REQUEST ──────────────────────
+ * The bind is call site 4 of 6, i.e. after the OIDC callback and BEFORE `provisionVclawCommunity`
+ * and before the handoff that mounts the app — the app's first authorised request is made by the
+ * shell, so binding later would race the app's own refusal and the person would watch an empty
+ * estate win. It happens ONCE per invocation: this sequence runs once per sign-in, and there is no
+ * retry loop here (the retry is the person pressing the surface's own control, which re-enters this
+ * function deliberately).
+ *
+ * Idempotence itself is the ENDPOINT's property — J1 keys the row and the device entry, so a second
+ * call writes nothing — and the report says so (`idempotent`). The app does not fake it by skipping
+ * the call when it thinks a row exists: it cannot read the estate's rows, and a client-side guess
+ * about authority is the kind of assertion this estate refuses.
  *
  * `org` is the field's own value; it is validated HERE too, so a caller that bypasses the field
  * cannot sign in with an org nobody checked.
@@ -213,7 +253,26 @@ export async function signInWithVclaw(org: string): Promise<VclawSignInResult> {
   // Read the device key the Rust layer already holds. Silent by construction:
   // nothing here renders, prompts, or asks the human to handle a key.
   const identity = await getIdentity();
+
+  // A1 — THE BIND, ONCE, AND BEFORE ANYTHING AUTHORISED HAPPENS. The token and the NIP-98 proof are
+  // presented by the native layer, not from here (see `vclawPrincipalBind.ts`): this call crosses
+  // the IPC boundary with no arguments and gets an OUTCOME back, never a credential.
+  //
+  // A FAILURE STOPS THE SEQUENCE, and that is the point rather than a side effect: the alternative
+  // is to enter a shell whose relay requests the estate will refuse, which renders as an app with no
+  // agents and no error — the defect A2 exists to remove. `stage: "bind"` carries the state, so the
+  // screen can say WHICH thing is wrong (A4) instead of blaming the IdP.
+  const bind = await bindVclawPrincipalDevice(identity.pubkey);
+  if (bind.state !== "bound") {
+    throw new VclawSignInFailure(
+      "bind",
+      describeVclawBindFailure(bind),
+      orgAnswer,
+      bind,
+    );
+  }
+
   const provision = provisionVclawCommunity(account.groups);
   const link = writeVclawLink(identity.pubkey, account, orgAnswer);
-  return { account, identity, provision, link, org: orgAnswer };
+  return { account, identity, bind, provision, link, org: orgAnswer };
 }

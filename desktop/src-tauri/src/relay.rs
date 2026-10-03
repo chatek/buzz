@@ -29,7 +29,10 @@ const MALFORMED_RESPONSE_MESSAGE: &str = "relay returned malformed response: not
 // relay is not cut off before the WebSocket path would be.
 const QUERY_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-fn configured_env_var(name: &str) -> Option<String> {
+/// Read a non-empty environment override. `pub(crate)` because more than one surface is configured
+/// this way (the relay, and the estate base the device binding signs against) and a second copy of
+/// this three-line predicate is a second place for the trimming rule to drift.
+pub(crate) fn configured_env_var(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .map(|value| value.trim().to_string())

@@ -616,6 +616,10 @@ pub fn run() {
             vclaw_oidc_login,
             vclaw_oidc_session,
             vclaw_oidc_sign_out,
+            // The device binding (job A1 of docs/AUTH_BIND_PLAN.md): the SIGN-IN's step 4, and the
+            // one the front-end gate waits on. It owns the OIDC token and the NIP-98 proof so neither
+            // reaches the webview.
+            vclaw_bind_principal_device,
             decrypt_observer_event,
             build_observer_control_event,
             create_auth_event,

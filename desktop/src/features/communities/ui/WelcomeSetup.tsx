@@ -21,6 +21,8 @@ import {
   signInWithVclaw,
   VclawSignInFailure,
 } from "@/features/onboarding/vclawSignIn";
+import type { VclawBindReport } from "@/shared/api/vclawPrincipalBind";
+import { VclawBindNotice } from "@/features/onboarding/ui/VclawBindNotice";
 import type { OrgVerdict } from "@/features/onboarding/vclawOrg";
 import { VclawOrgField } from "@/features/onboarding/ui/VclawOrgField";
 import { Button } from "@/shared/ui/button";
@@ -75,6 +77,14 @@ export function WelcomeSetup({
   // on the entry screen: the claim decides, and its answer is what the human sees. `null` before a
   // sign-in and after a STOP.
   const [vclawOrg, setVclawOrg] = React.useState<OrgVerdict | null>(null);
+  // THE DEVICE BINDING REPORT (A1/A2), for the same reason as on the entry screen: this screen
+  // carries the SAME sign-in, so it carries the same stop. `null` before an attempt; anything but
+  // `bound` is why this screen is still up instead of an empty app.
+  const [vclawBind, setVclawBind] = React.useState<VclawBindReport | null>(
+    null,
+  );
+  // The org of the last attempt, so the failure surface's retry re-runs the same sequence.
+  const lastOrgRef = React.useRef<string>("vclaw");
   const communityOnboarding = useCommunityOnboarding();
   const { reloadFromStorage } = useCommunities();
 
@@ -91,17 +101,21 @@ export function WelcomeSetup({
   // we expect, so the fallback is the sign-in rather than an instruction to go backwards.
   const signIn = React.useCallback(
     async (org: string) => {
+      lastOrgRef.current = org;
       setIsVclawPending(true);
       setVclawMessage(null);
       setVclawOrg(null);
+      setVclawBind(null);
       try {
         const {
           account,
+          bind,
           provision,
           link,
           org: grantedOrg,
         } = await signInWithVclaw(org);
         setVclawOrg(grantedOrg);
+        setVclawBind(bind);
         setVclawMessage(
           `Signed in to vclaw as ${account.subject}` +
             (provision.error
@@ -114,13 +128,19 @@ export function WelcomeSetup({
         reloadFromStorage();
       } catch (cause) {
         // A refusal from the ESTATE is not an IdP error, and saying so would send the reader to
-        // the issuer when the claim was what said no (see the pitfall log's wrong-layer entries).
+        // the issuer when the claim was what said no (see the pitfall log's wrong-layer entries). A
+        // refused DEVICE BINDING is a third layer again, with its own surface and its own state.
         const stopped = cause instanceof VclawSignInFailure ? cause : null;
         setVclawOrg(stopped?.verdict ?? null);
-        // An ORG refusal IS the estate's answer: it renders as the verdict, once, and is not repeated
-        // as a second sentence.
+        // A BIND failure is a report, not a sentence: the notice renders the state, the reason code
+        // and the retry.
+        setVclawBind(stopped?.stage === "bind" ? stopped.bind : null);
+        // An ORG refusal IS the estate's answer, and a BIND failure has its own surface, so neither
+        // is repeated as a second sentence.
         setVclawMessage(
-          stopped?.stage === "org" ? null : describeVclawSignInFailure(cause),
+          stopped?.stage === "org" || stopped?.stage === "bind"
+            ? null
+            : describeVclawSignInFailure(cause),
         );
       } finally {
         setIsVclawPending(false);
@@ -281,6 +301,17 @@ export function WelcomeSetup({
                         {vclawMessage}
                       </p>
                     ) : null}
+                    {/* The SAME failure surface as the entry screen's. A failed bind stops before
+                        `reloadFromStorage()`, so this screen stays up; without a surface it would
+                        say nothing about why the sign-in ended — the silent dead end A2 is about,
+                        reached through the other door. */}
+                    <VclawBindNotice
+                      onRetry={() => {
+                        void signIn(lastOrgRef.current);
+                      }}
+                      pending={isVclawPending}
+                      report={vclawBind}
+                    />
                   </VclawOrgField>
                 </div>
               ) : (
