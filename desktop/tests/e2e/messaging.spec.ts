@@ -3071,9 +3071,9 @@ test("opens a single-level thread panel with inline expansion", async ({
     },
     {
       content: nestedReplyFromAgent,
-      // Stamp the agent reply one second ahead of the mock clock: the facepile
-      // is ordered by reply recency, and every reply in this test lands inside
-      // the same second, which leaves the leading participant ambiguous. This
+      // Stamp the agent reply one second ahead of the mock clock. The facepile
+      // is ordered by reply recency, and this test's replies all land inside
+      // the same second, which leaves the leading participant ambiguous; this
       // keeps the agent reply unambiguously the most recent one.
       createdAt: Math.floor(Date.now() / 1000) + 1,
       parentEventId: firstReplyId,
