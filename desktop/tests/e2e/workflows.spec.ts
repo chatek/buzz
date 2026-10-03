@@ -45,6 +45,28 @@ async function editWorkflowName(
   ).not.toBeVisible();
 }
 
+/**
+ * Fill the Send Message step's own "Message text" field.
+ *
+ * The trigger pane renders its own field labelled "Message text" as well — its
+ * first trigger condition field (label "Message text") is expanded by default —
+ * so `getByLabel("Message text")` is ambiguous while the inspector is still on
+ * the trigger pane. The text then lands in the trigger condition, the saved
+ * workflow carries a trigger filter, `getWorkflowActivationWarning` stops
+ * firing, the "This workflow may run often" dialog never opens, and the
+ * activation click hangs until the test times out. Measured 2026-10-03 on
+ * "enables and disables a workflow from its card status toggle": 5/20 repeats
+ * failed, and in a 20-run probe the two runs whose step textarea was still
+ * empty after the fill were exactly the two runs that failed. Target the step
+ * textarea by its stable id, as workflow-local-controls.spec.ts does.
+ */
+async function fillStepMessageText(
+  dialog: import("@playwright/test").Locator,
+  text: string,
+) {
+  await dialog.locator('textarea[id^="wf-step-"][id$="-text"]').fill(text);
+}
+
 async function createWorkflow(
   page: import("@playwright/test").Page,
   name: string,
@@ -96,7 +118,7 @@ async function createWorkflow(
 
   await dialog.getByRole("button", { name: "Add step", exact: true }).click();
   await page.getByRole("menuitem", { name: "Send Message" }).click();
-  await dialog.getByLabel("Message text").fill("Workflow notification");
+  await fillStepMessageText(dialog, "Workflow notification");
   if (options?.stepName) {
     await dialog.getByRole("button", { name: "Step details" }).click();
     await dialog.getByLabel("Name (optional)").fill(options.stepName);
@@ -700,7 +722,7 @@ test("captures the built editor at desktop and narrow widths", async ({
   await editWorkflowName(dialog, "editor_screenshot");
   await dialog.getByRole("button", { name: "Add step", exact: true }).click();
   await page.getByRole("menuitem", { name: "Send Message" }).click();
-  await dialog.getByLabel("Message text").fill("Notify the workflow channel");
+  await fillStepMessageText(dialog, "Notify the workflow channel");
   const inspector = dialog.getByTestId("workflow-node-inspector");
 
   for (const viewport of [
@@ -805,7 +827,7 @@ test("pane routes use stable IDs and Form/YAML changes stay synchronized", async
 
   await dialog.getByRole("button", { name: "Add step", exact: true }).click();
   await page.getByRole("menuitem", { name: "Send Message" }).click();
-  await dialog.getByLabel("Message text").fill("first message");
+  await fillStepMessageText(dialog, "first message");
   await expect(page).toHaveURL(/pane=step%3Astep_1/);
 
   await dialog.getByRole("button", { name: "Add after Step 1" }).click();

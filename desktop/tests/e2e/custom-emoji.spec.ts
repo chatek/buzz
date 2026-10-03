@@ -435,21 +435,28 @@ test("reacting with a custom emoji renders via the loopback media proxy", async 
   );
 
   const inlineAddReactionButton = row.getByLabel("Add reaction");
-  // The picker closes with the pointer/focus position depending on animation
-  // timing. Put the row into a deterministic idle state before checking the
-  // pill's pre-existing hidden behavior.
-  await page.mouse.move(0, 0);
-  await page.evaluate(() => {
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-  });
+  // Put the row into a deterministic idle state before checking the pill's
+  // pre-existing hidden behavior. Radix restores focus to the popover trigger
+  // ("Open reactions", inside this row) when the picker closes, and that restore
+  // can land AFTER a single blur would run. Measured span 2026-10-03 over 20
+  // repeats (5 failures): every failing run reported rowFocusWithin=true with
+  // document.activeElement = [data-testid="react-message-…"], so the row kept
+  // `group-focus-within/message:opacity-100` and this button never settled to 0
+  // — the failure was the timing of the focus restore, not pointer position.
+  // Clear both pointer and focus state on every poll attempt, so the assertion
+  // tests the button's idle style rather than guessing when the restore landed.
   await expect
-    .poll(() =>
-      inlineAddReactionButton.evaluate((button) => {
+    .poll(async () => {
+      await page.mouse.move(0, 0);
+      await page.evaluate(() => {
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+      });
+      return inlineAddReactionButton.evaluate((button) => {
         return getComputedStyle(button).opacity;
-      }),
-    )
+      });
+    })
     .toBe("0");
   await expect
     .poll(() =>
