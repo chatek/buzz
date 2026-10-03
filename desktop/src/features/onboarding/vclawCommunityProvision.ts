@@ -40,27 +40,103 @@ import type { Community } from "@/features/communities/types";
 export const VCLAW_RELAY_URL = "wss://agents.vclawhub.com";
 
 /**
+ * ── THE GROUP PREFIX IS A LIST: CANONICAL FIRST, LEGACY SECOND (operator ruling 2026-10-03) ──────
+ * `vclaw.tenant.<name>` is the CANONICAL group prefix. `vchat.tenant.<name>` is a LEGACY ALIAS,
+ * accepted only while the estate migrates off it — **`vchat` is SUNSET on 2026-11-02**, so both the
+ * legacy prefix below and every branch that reads it are TEMPORARY and go with that date.
+ *
+ * WHY A LIST AND NOT ONE CONSTANT: with the single legacy constant, an identity whose claim carries
+ * the canonical prefix rendered as an identity with NO segment at all — an empty list, which reads
+ * as "a name that appears in no live record". The list keeps such a user visible, and
+ * `segmentGroupEntry` MARKS the legacy match so the UI shows it AS legacy, never as current.
+ *
+ * A prefix match is CANONICAL-FIRST: a claim that carries both forms for one name resolves to the
+ * canonical one, and the legacy one is reported as the alias it is.
+ *
  * Only tenant groups name a SPACE. `vchat.admin` is operator scope, not somewhere to talk, and
  * `greenzone` / `nextcrm` are application admission groups — neither is a room.
  *
  * These are returned to the caller so the UI can REPORT what the identity is entitled to. They are
  * deliberately NOT turned into communities.
  */
-export const SEGMENT_GROUP_PREFIX = "vchat.tenant.";
+export const SEGMENT_GROUP_PREFIXES: readonly string[] = [
+  "vclaw.tenant.",
+  // LEGACY ALIAS — TEMPORARY. `vchat` is sunset 2026-11-02; remove with it.
+  "vchat.tenant.",
+];
 
-export function segmentGroups(groups: readonly string[]): string[] {
-  return [...new Set(groups.filter((g) => g.startsWith(SEGMENT_GROUP_PREFIX)))].sort();
-}
+/** The canonical prefix, named so a reader does not index the list by hand. */
+export const SEGMENT_GROUP_CANONICAL_PREFIX = SEGMENT_GROUP_PREFIXES[0];
 
-/** `vchat.tenant.kuai` -> `Kuai`. The segment name is what a person recognises. */
-export function segmentDisplayName(group: string): string {
-  const raw = group.slice(SEGMENT_GROUP_PREFIX.length).trim();
-  if (!raw) return group;
+/** The legacy alias. TEMPORARY: sunset 2026-11-02 (see SEGMENT_GROUP_PREFIXES). */
+export const SEGMENT_GROUP_LEGACY_PREFIX = SEGMENT_GROUP_PREFIXES[1];
+
+/** The date the legacy `vchat` estate is sunset. Used verbatim in the user-facing strings. */
+export const SEGMENT_LEGACY_SUNSET = "2026-11-02";
+
+/** What a tenant group says, whichever prefix it carried. */
+export type SegmentGroupEntry = {
+  /** The group EXACTLY as the estate wrote it in the claim, e.g. `vchat.tenant.kuai`. */
+  group: string;
+  /** The prefix that matched, canonical or legacy. */
+  prefix: string;
+  /** The bare name, case-folded: what two groups are compared on. */
+  name: string;
+  /** `Kuai` — the name a person recognises. */
+  displayName: string;
+  /** True when this group is the LEGACY alias rather than the canonical form. */
+  legacy: boolean;
+  /** The same name under the canonical prefix — what the estate should migrate to. */
+  canonicalGroup: string;
+};
+
+/** `kuai` -> `Kuai`, `acme-corp` -> `Acme Corp`. */
+function segmentName(raw: string): string {
   return raw
     .split(/[-_.]/)
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+/**
+ * Read a tenant group through whichever prefix it carries, or `null` when it names no space.
+ *
+ * The prefix match is case-insensitive (a claim is data, not a constant we control) but the
+ * `group` and `canonicalGroup` fields keep their own case, so a caller can show the estate's exact
+ * string rather than a normalised one we invented.
+ */
+export function segmentGroupEntry(group: string): SegmentGroupEntry | null {
+  const folded = group.trim().toLowerCase();
+  const prefix = SEGMENT_GROUP_PREFIXES.find((candidate) =>
+    folded.startsWith(candidate),
+  );
+  if (!prefix) return null;
+  const raw = group.trim().slice(prefix.length).trim();
+  if (!raw) return null;
+  return {
+    group: group.trim(),
+    prefix,
+    name: raw.toLowerCase(),
+    displayName: segmentName(raw),
+    legacy: prefix === SEGMENT_GROUP_LEGACY_PREFIX,
+    canonicalGroup: `${SEGMENT_GROUP_CANONICAL_PREFIX}${raw}`,
+  };
+}
+
+/** The tenant groups in a claim — legacy alias included, so a legacy-only user is not an empty list. */
+export function segmentGroups(groups: readonly string[]): string[] {
+  return [
+    ...new Set(groups.filter((g) => segmentGroupEntry(g) !== null)),
+  ].sort();
+}
+
+/** `vchat.tenant.kuai` -> `Kuai`. The segment name is what a person recognises. */
+export function segmentDisplayName(group: string): string {
+  const entry = segmentGroupEntry(group);
+  // No known prefix: hand back the caller's own string rather than slice a prefix that is not
+  // there, which is what the single-constant version did to every canonical group.
+  return entry ? entry.displayName : group;
 }
 
 export type ProvisionResult = {
@@ -93,7 +169,12 @@ export function provisionVclawCommunity(
   relayUrl: string = VCLAW_RELAY_URL,
 ): ProvisionResult {
   const segments = segmentGroups(groups);
-  const base: ProvisionResult = { segments, added: false, existing: false, activeId: null };
+  const base: ProvisionResult = {
+    segments,
+    added: false,
+    existing: false,
+    activeId: null,
+  };
 
   let communities: Community[];
   try {
@@ -103,13 +184,16 @@ export function provisionVclawCommunity(
   }
 
   const normalized = normalizeRelayUrl(relayUrl);
-  const match = communities.find((c) => normalizeRelayUrl(c.relayUrl) === normalized);
+  const match = communities.find(
+    (c) => normalizeRelayUrl(c.relayUrl) === normalized,
+  );
 
   if (match) {
     // Already present. Select it only if nothing is selected, so a re-login never yanks the operator
     // out of wherever they were. NOTE: we do NOT rename it — its name is the operator's.
     const active = communities.find((c) => c.relayUrl && c.id === match.id);
-    if (!active) return { ...base, error: "community present but unresolvable" };
+    if (!active)
+      return { ...base, error: "community present but unresolvable" };
     return { ...base, existing: true, activeId: active.id };
   }
 

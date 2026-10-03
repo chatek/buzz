@@ -43,7 +43,50 @@ export function vclawSession(): Promise<VclawOidcAccount | null> {
   return invokeTauri<VclawOidcAccount | null>("vclaw_oidc_session", {});
 }
 
-/** Clear the cached token. */
-export function vclawSignOut(): Promise<void> {
-  return invokeTauri<void>("vclaw_oidc_sign_out", {});
+/**
+ * The IdP's verdict on the refresh token. Snake_case on the wire: it comes from
+ * the Rust enum `vclaw_sign_out::RevocationOutcome`.
+ *
+ * `revoked` covers "the server says this token is not usable any more", which is
+ * also its answer for a token it does not recognise (RFC 7009 §2.2) — it does
+ * NOT prove the token was live a moment ago. `rejected` / `unreachable` /
+ * `cache_unreadable` all mean the credential was NOT confirmed dead.
+ */
+export type VclawRevocationOutcome =
+  | "revoked"
+  | "rejected"
+  | "unreachable"
+  | "no_cached_token"
+  | "cache_unreadable";
+
+/** Mirrors `vclaw_sign_out::VclawSignOutReport` (`camelCase` on the wire). */
+export type VclawSignOutReport = {
+  /** Did the engine's cache hold a token when it was asked to clear it? */
+  hadCachedToken: boolean;
+  /** Is the token file gone afterwards? `null` when the path could not be resolved. */
+  tokenCacheRemoved: boolean | null;
+  revocation: VclawRevocationOutcome;
+  /** HTTP status of the revocation POST, when one was sent. */
+  revocationStatus: number | null;
+  /** One non-sensitive line for the log; never token material. */
+  detail: string | null;
+};
+
+/**
+ * Sign out of vclaw on THIS DEVICE, and revoke the refresh token at the IdP.
+ *
+ * ⚠️ NON-DESTRUCTIVE, and that is the whole point of it existing: it clears the
+ * cached vclaw session under the `vclaw-idp` namespace and nothing else. The
+ * identity key, the keyring, the relay session and every local byte stay. The
+ * DESTRUCTIVE command is `signOut()` in `./tauriIdentity`, which wipes
+ * everything and relaunches into first-run setup.
+ *
+ * ⚠️ It returns a REPORT, not `void`. The previous signature here declared
+ * `Promise<void>` while the Rust command already returned a bool — the declared
+ * type hid the only fact that matters after a logout: whether the credential was
+ * actually revoked. `revocation !== "revoked" && !== "no_cached_token"` means the
+ * refresh token may still be usable, and the UI must not report a clean sign-out.
+ */
+export function vclawSignOut(): Promise<VclawSignOutReport> {
+  return invokeTauri<VclawSignOutReport>("vclaw_oidc_sign_out", {});
 }

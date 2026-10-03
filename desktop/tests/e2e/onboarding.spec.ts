@@ -1,3 +1,5 @@
+import { createServer, type AddressInfo, type Socket } from "node:net";
+
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { expect, test, type Page } from "@playwright/test";
 import { nsecEncode, npubEncode } from "nostr-tools/nip19";
@@ -715,16 +717,30 @@ test("completed users skip the loading gate while profile is still settling", as
   await expectHomeView(page);
 });
 
-test("fresh existing-identity path leads with private-key recovery", async ({
+test("lost-mode recovery leads with the private-key sheet and both recovery paths", async ({
   page,
 }) => {
-  await installMockBridge(page, undefined, {
-    skipCommunitySeed: true,
-    skipOnboardingSeed: true,
-  });
+  // ENTRY CHANGED — a boot replaces the click. `Use an existing key` is withdrawn by the one-door
+  // gate (`VCLAW_SIGN_IN_ONLY = true`, MachineOnboardingFlow.tsx:93) and is NOT in the recovery set,
+  // so a non-lost identity never renders it. An identity the app reports as lost boots STRAIGHT on
+  // this step (probes P6/P7, run2/run3 logs), which is what the assertions below measure.
+  // PARKED with the old title: the "fresh, non-lost" framing — no such path exists in this build.
+  await installMockBridge(
+    page,
+    { identityLost: true },
+    { skipOnboardingSeed: true },
+  );
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
+  // THE GATE, asserted before the sheet is walked. Absence asserted positively: if the gate is ever
+  // re-opened these fail, where the removed click would only have failed later.
+  await expect(
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Create a new identity key" }),
+  ).toHaveCount(0);
+  await expect(page.getByTestId("onboarding-page-key-intro")).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Enter your private key" }),
   ).toBeVisible();
@@ -801,66 +817,74 @@ test("fresh existing-identity path leads with private-key recovery", async ({
   await page.getByTestId("nostr-import-phone-link").click();
   const phoneDialog = page.getByTestId("phone-recovery-dialog");
   await expect(phoneDialog).toBeVisible();
+  // RE-POINTED destination, not a new claim: the heading is conditional on the mode
+  // (`identityLost ? "Recover from your phone" : "Scan to sign in"`, MachineOnboardingFlow.tsx:748)
+  // and this test now runs in the lost mode it can reach.
   await expect(
-    phoneDialog.getByRole("heading", { name: "Scan to sign in" }),
+    phoneDialog.getByRole("heading", { name: "Recover from your phone" }),
   ).toBeVisible();
   await expect(phoneDialog.getByTestId("identity-recovery-qr")).toBeVisible();
   await expect(page.getByTestId("onboarding-content-card")).toBeVisible();
 });
 
-test("first-launch key import continues to machine setup", async ({ page }) => {
-  await installMockBridge(page, undefined, {
-    skipCommunitySeed: true,
-    skipOnboardingSeed: true,
-  });
-  await page.goto("/");
+/* ── PARKED (1 of 17) — "first-launch key import continues to machine setup" (was line 811) ────────────
+   UNREACHABLE IN EVERY MODE: a non-lost key import has NO UI path (the gate refuses `key-import` unless `identityLost`), and a
+     lost-mode import ends on `relaunch-required` — it never reaches `onboarding-page-2`. Mechanism:
+     `bootedLost && !identityLost -> stage = "relaunch-required"` (machineOnboarding.ts:110-124).
+   SUCCESSOR: tests/e2e/identity-lost.spec.ts "importing a key from lost mode shows the relaunch-required
+     screen" pins the reachable outcome of the same action.
+   RESTORE: set the gate constant false (`src/features/onboarding/ui/MachineOnboardingFlow.tsx:93 `VCLAW_SIGN_IN_ONLY``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 811-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
-  const importedNsec = nsecEncode(hexToBytes(TEST_IDENTITIES.alice.privateKey));
-  await page.getByTestId("nostr-import-nsec-input").fill(importedNsec);
-  await page.getByTestId("nostr-import-submit").click();
-
-  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
-  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
-  await expect(page.getByTestId("app-loading-gate")).toHaveCount(0);
-});
-
-test("key import locks host navigation and ignores rapid duplicate submits", async ({
+test("a lost-mode key import issues ONE command and locks its submit", async ({
   page,
 }) => {
+  // ENTRY CHANGED; the duplicate-submit claim this test exists for is INTACT below.
+  // NOT KEPT, both for measured reasons: (a) "continues to machine setup" — see PARKED 1;
+  // (b) `onboarding-back` `toBeDisabled` ("locks host navigation") — the lost-mode key-entry step
+  // renders NO back control at all (probe P2, run2 log: `onboarding-back` count 0), so that half of
+  // the old claim has no element to assert on. REPORT.md §PARKED.
   await installMockBridge(
     page,
-    { identityImportDelayMs: 500 },
-    {
-      skipCommunitySeed: true,
-      skipOnboardingSeed: true,
-    },
+    { identityLost: true, identityImportDelayMs: 500 },
+    { skipOnboardingSeed: true },
   );
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
+  await expect(
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+
   const importedNsec = nsecEncode(hexToBytes(TEST_IDENTITIES.alice.privateKey));
   await page.getByTestId("nostr-import-nsec-input").fill(importedNsec);
   const submit = page.getByTestId("nostr-import-submit");
   await submit.dblclick({ delay: 0 });
 
   await expect(submit).toBeDisabled();
-  await expect(page.getByTestId("onboarding-back")).toBeDisabled();
   await expect.poll(() => commandCount(page, "import_identity")).toBe(1);
-  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
+  // The reachable outcome of a lost-mode import, where the old tail asserted a page that no mode
+  // can produce (identity-lost.spec.ts pins the same terminal state).
+  await expect(page.getByTestId("relaunch-required")).toBeVisible();
 });
 
-test("key import keeps alternate recovery methods disabled while submitting", async ({
+test("a lost-mode key import keeps alternate recovery methods disabled while submitting", async ({
   page,
 }) => {
+  // ENTRY CHANGED; every disabled-while-submitting assertion below is byte-identical to the
+  // original. The dropped tail (`onboarding-page-2`) is unreachable — see PARKED 1.
   await installMockBridge(
     page,
-    { identityImportDelayMs: 500 },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { identityLost: true, identityImportDelayMs: 500 },
+    { skipOnboardingSeed: true },
   );
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
+  await expect(
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+
   const importedNsec = nsecEncode(hexToBytes(TEST_IDENTITIES.alice.privateKey));
   await page.getByTestId("nostr-import-nsec-input").fill(importedNsec);
   await page.getByTestId("nostr-import-submit").click();
@@ -872,53 +896,47 @@ test("key import keeps alternate recovery methods disabled while submitting", as
   await expect(page.getByTestId("nostr-import-nsec-input")).toBeVisible();
   await expect(page.getByTestId("backup-recovery-dialog")).toHaveCount(0);
   await expect(page.getByTestId("phone-recovery-dialog")).toHaveCount(0);
-  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
+  await expect(page.getByTestId("relaunch-required")).toBeVisible();
 });
 
-test("imported-key users can skip out of harness setup", async ({ page }) => {
-  // Regression: importing an existing key sets the onboarding state machine's
-  // "continuing" marker, which pinned the stage to onboarding even after
-  // complete() ran — so Skip/Next silently did nothing. The fresh-key skip
-  // tests never exercised the import path, so this gap shipped. Prove an
-  // imported-key user actually leaves onboarding on Skip.
-  await installMockBridge(page, undefined, {
-    skipCommunitySeed: true,
-    skipOnboardingSeed: true,
-  });
-  await page.goto("/");
+/* ── PARKED (2 of 17) — "imported-key users can skip out of harness setup" (was line 878) ────────────
+   UNREACHABLE IN EVERY MODE: the whole chain is the withdrawn import entry, and its outcome (`onboarding-page-2` -> skip)
+     cannot be reached: a lost-mode import relaunches, it does not continue into setup.
+   SUCCESSOR: the equivalent claim for the one-door entry is walked by tests/e2e/vclaw-signin-only.spec.ts,
+     whose page-sequence assertion shows a completed sign-in never passes through setup at all.
+   RESTORE: set the gate constant false (`src/features/onboarding/ui/MachineOnboardingFlow.tsx:93 `VCLAW_SIGN_IN_ONLY``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 878-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
-  const importedNsec = nsecEncode(hexToBytes(TEST_IDENTITIES.alice.privateKey));
-  await page.getByTestId("nostr-import-nsec-input").fill(importedNsec);
-  await page.getByTestId("nostr-import-submit").click();
-
-  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
-  await page.getByTestId("onboarding-setup-skip").click();
-
-  // Reaching community onboarding proves machine onboarding completed rather
-  // than staying pinned on the setup step.
-  await expect(page.getByText("Join or create a community")).toBeVisible();
-  await expect(page.getByTestId("onboarding-page-2")).toHaveCount(0);
-});
-
-test("fresh-key harness completion continues directly into profile onboarding", async ({
+test("a completed estate sign-in continues directly into profile onboarding", async ({
   page,
 }) => {
-  await page.addInitScript(() => {
-    const communityId = "e2e-existing-community";
-    window.localStorage.setItem(
-      "buzz-communities",
-      JSON.stringify([
-        {
-          id: communityId,
-          name: "E2E Test",
-          relayUrl: "ws://localhost:3000",
-          addedAt: new Date().toISOString(),
-        },
-      ]),
-    );
-    window.localStorage.setItem("buzz-active-community-id", communityId);
-  });
+  // ENTRY CHANGED, and everything this test was written to pin is kept.
+  //
+  // (1) The old entry was the fresh-key sheet ("Create a new identity key" -> "Create my private
+  //     key"), which is WITHDRAWN IN EVERY MODE: `identity-key-intro` is in the hidden set and not
+  //     in the recovery set (MachineOnboardingFlow.tsx:94-103), so no UI creates a key, and no fixture or route restores it (REPORT.md §PARKED, sub-claim A).
+  // (2) The reachable entry that yields BOTH a machine-flow exit and a real profile step is the
+  //     one-door entry itself — MEASURED (probe P14, run7 log): the machine landing's
+  //     `Login with VClaw`, scripted at the IPC boundary, lands on `onboarding-page-1` (ProfileStep)
+  //     and does NOT pass through setup/config.
+  //
+  // KEPT VERBATIM BELOW: the deferred-profile-reads regression this test exists for — the submit
+  // stays disabled while profile reads are in flight, the Enter/click path taken while pending
+  // sends no `update_profile`, the reads release, the submit enables, the avatar step follows, and
+  // the whole onboarding run mounts no `app-loading-gate`/`boot-splash-overlay`.
+  const vclawAccount = {
+    subject: "vclaw-subject-1",
+    email: "operator@vchat.email",
+    preferredUsername: "operator",
+    groups: [
+      "vclaw.tenant.vclaw",
+      "vclaw.tenant.kuai",
+      "vchat.tenant.kuai",
+      "vchat.admin",
+    ],
+  };
   await installMockBridge(
     page,
     {
@@ -937,13 +955,37 @@ test("fresh-key harness completion continues directly into profile onboarding", 
     };
   });
   await page.goto("/");
+  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
 
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
-  await page.getByRole("button", { name: "Create my private key" }).click();
-  await page.getByTestId("onboarding-next").click();
+  // ORDER MATTERS: `installMockBridge` installs the IPC transport itself, so the scripted IdP is
+  // wrapped around it afterwards (same boundary tests/e2e/vclaw-signin-only.spec.ts crosses).
+  await page.evaluate((account: typeof vclawAccount) => {
+    const testWindow = window as typeof window & {
+      __TAURI_INTERNALS__: {
+        invoke: (command: string, args?: unknown, options?: unknown) => unknown;
+      };
+    };
+    const original = testWindow.__TAURI_INTERNALS__.invoke;
+    testWindow.__TAURI_INTERNALS__.invoke = (
+      command: string,
+      args?: unknown,
+      options?: unknown,
+    ) =>
+      command === "vclaw_oidc_login" || command === "vclaw_oidc_session"
+        ? Promise.resolve(command === "vclaw_oidc_login" ? account : null)
+        : original(command, args, options);
+  }, vclawAccount);
+
+  // THE GATE, before the door: the landing offers the sign-in and NO key control.
   await expect(
-    page.getByRole("heading", { name: "Connect your AI provider" }),
-  ).toBeVisible();
+    page.getByRole("button", { name: "Create a new identity key" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Login with VClaw" }).click();
+
+  await expect(page.getByTestId("onboarding-page-1")).toBeVisible();
 
   await page.evaluate(() => {
     const testWindow = window as Window & {
@@ -958,16 +1000,20 @@ test("fresh-key harness completion continues directly into profile onboarding", 
       }
     }).observe(document.body, { childList: true, subtree: true });
   });
-
-  await page.getByTestId("onboarding-setup-skip").click();
-
   await expect(page.getByTestId("onboarding-page-1")).toBeVisible();
   await expect(
     page.getByTestId("onboarding-step-dots").locator("span"),
   ).toHaveCount(7);
+  await expect(page.getByTestId("onboarding-page-1")).toBeVisible();
+  // The step dots: SEVEN steps, and exactly ONE of them is the wide active marker. The original
+  // pinned the active dot by index (`nth(4)`); the index belonged to the withdrawn entry's route,
+  // so it is asserted index-independently here — which also catches a second dot going wide.
   await expect(
-    page.getByTestId("onboarding-step-dots").locator("span").nth(4),
-  ).toHaveClass(/w-7/);
+    page.getByTestId("onboarding-step-dots").locator("span"),
+  ).toHaveCount(7);
+  await expect(
+    page.getByTestId("onboarding-step-dots").locator("span.w-7"),
+  ).toHaveCount(1);
   const profileSubmit = page.getByTestId("onboarding-next");
   await page.getByTestId("onboarding-display-name").fill("Delayed Profile");
   await expect(profileSubmit).toBeDisabled();
@@ -1033,17 +1079,30 @@ test("fresh-key harness completion continues directly into profile onboarding", 
   ).toEqual([]);
 });
 
-test("first-launch encrypted backup import asks for a passphrase and continues", async ({
+test("a wiped-identity encrypted key import asks for a passphrase, then relaunches", async ({
   page,
 }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await installMockBridge(page, undefined, {
-    skipCommunitySeed: true,
-    skipOnboardingSeed: true,
-  });
+  // ENTRY CHANGED: the import page is reached by a lost-mode boot, NOT by clicking `Use an existing
+  // key` — that control is withdrawn and the page it opens is refused unless the app reports the
+  // identity lost (PARKED 1). Everything the form itself does is byte-identical below.
+  await installMockBridge(
+    page,
+    { identityLost: true },
+    { skipOnboardingSeed: true },
+  );
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
+  await expect(
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Enter your private key" }),
+  ).toBeVisible();
+  // MOVED HERE from the old tail (it was asserted after the import): the machine gate WRAPS the
+  // import step — measured in the lost-mode boot (probe P2, run2 log) — while the relaunch screen
+  // renders OUTSIDE it. The claim is kept where it is true, not dropped.
+  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
   // Spec-vector blob the mock bridge accepts with the mock passphrase.
   const mockNcryptsec =
     "ncryptsec1qgg9947rlpvqu76pj5ecreduf9jxhselq2nae2kghhvd5g7dgjtcxfqtd67p9m0w57lspw8gsq6yphnm8623nsl8xn9j4jdzz84zm3frztj3z7s35vpzmqf6ksu8r89qk5z2zxfmu5gv8th8wclt0h4p";
@@ -1084,20 +1143,32 @@ test("first-launch encrypted backup import asks for a passphrase and continues",
     .fill("mock horse battery staple lake orbit");
   await page.getByTestId("nostr-import-submit").click();
 
-  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
-  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
+  // The reachable terminal state of a wiped-identity import, where the old tail asserted a page no
+  // mode can produce (identity-lost.spec.ts pins the same state for the nsec path). The tail's
+  // `machine-onboarding-gate` assertion is MOVED to the entry above, where it is true.
+  await expect(page.getByTestId("relaunch-required")).toBeVisible();
 });
 
-test("first-launch import accepts an .ncryptsec backup file", async ({
+test("a wiped-identity import accepts an .ncryptsec backup file", async ({
   page,
 }) => {
-  await installMockBridge(page, undefined, {
-    skipCommunitySeed: true,
-    skipOnboardingSeed: true,
-  });
+  // ENTRY CHANGED: lost-mode boot, not the withdrawn `Use an existing key` click (PARKED 1).
+  await installMockBridge(
+    page,
+    { identityLost: true },
+    { skipOnboardingSeed: true },
+  );
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
+  await expect(
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Enter your private key" }),
+  ).toBeVisible();
+  // MOVED HERE from the old tail: the machine gate wraps the import step (measured, probe P2), and
+  // the relaunch screen renders outside it.
+  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
 
   // The spotlight variant must expose a file path: a wiped user returns with
   // exactly the identity.ncryptsec our own save dialog produced. The accept
@@ -1199,34 +1270,22 @@ test("first-launch import accepts an .ncryptsec backup file", async ({
     .fill("mock horse battery staple lake orbit");
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
-  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
+  // The gate assertion that used to sit here is asserted at the import step above, where it holds.
+  await expect(page.getByTestId("relaunch-required")).toBeVisible();
 });
 
-test("non-local runtime override keeps community selection without release flag", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(page, undefined, {
-    relayWsUrl: "wss://override.example.com",
-    skipOnboardingSeed: true,
-    skipCommunitySeed: true,
-  });
-  await page.goto("/");
-
-  await expect(
-    page.getByRole("button", { name: /Join a community/ }),
-  ).toBeVisible();
-  await expect
-    .poll(() => page.evaluate(() => localStorage.getItem("buzz-communities")))
-    .toBeNull();
-});
+/* ── PARKED (3 of 17) — "non-local runtime override keeps community selection without release flag" (was line 1206) ────────────
+   UNREACHABLE IN EVERY MODE: the picker is hidden for EVERY runtime, local or not — the gate is a build constant, not a
+     runtime override (`WelcomeSetup.tsx:45`, read by the initial-page normaliser and `showPage`).
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1206-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
 
 test("non-local default auto-connects when the release flag is enabled", async ({
   page,
@@ -1269,688 +1328,164 @@ test("non-local default auto-connects when the release flag is enabled", async (
     });
 });
 
-test("first-community choices route join, create, owner, and member intents", async ({
+/* ── PARKED (4 of 17) — "first-community choices route join, create, owner, and member intents" (was line 1272) ────────────
+   UNREACHABLE IN EVERY MODE: the test IS the picker: all four intents live on pages in `VCLAW_SPRINT_1_HIDDEN_PAGES`
+     ({join, existing, owned, member}), refused at `showPage` and at the initial-page normaliser.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1272-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (5 of 17) — "first-community owner can connect an existing hosted community" (was line 1342) ────────────
+   UNREACHABLE IN EVERY MODE: its entry is `community-choice-create`, which is not rendered; `HostedCommunityOnboarding` is
+     rendered ONLY from WelcomeSetup (`page === "owned"`, and the sign-in modal), and `owned` is
+     refused — the hosted flow has no entry at all.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1342-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (6 of 17) — "first-community owner can create and connect a hosted community" (was line 1413) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn entry as PARKED 5 (`community-choice-create`); the Builderlab sign-in surface
+     behind it is unreachable.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1413-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (7 of 17) — "hosted community address line stays within the card for a long name" (was line 1487) ────────────
+   UNREACHABLE IN EVERY MODE: a layout claim about `hosted-community-address-input`, which is rendered only by
+     `HostedCommunityOnboarding` — unreachable (PARKED 5).
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1487-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (8 of 17) — "first-community reports a created community without a relay address" (was line 1548) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn entry as PARKED 5.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1548-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (9 of 17) — "first-community X cancels a pending sign-in" (was line 1591) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn entry as PARKED 5; it also re-asserts the withdrawn `Create a community` card.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1591-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (10 of 17) — "first-community owner can replace a mismatched account identity" (was line 1625) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn entry as PARKED 5.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1625-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (11 of 17) — "first-community owner recovers from an npub-only account identity" (was line 1692) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn entry as PARKED 5.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1692-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (12 of 17) — "first-community owner never rebinds over a same-key spelling in the hex field" (was line 1774) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn entry as PARKED 5.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1774-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (13 of 17) — "first-community owner with a padded same-key hex is ready, not mismatched" (was line 1833) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn entry as PARKED 5.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1833-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (14 of 17) — "first-community explains when the local identity belongs to another account" (was line 1876) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn entry as PARKED 5.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1876-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+/* ── PARKED (15 of 17) — "back clears Builderlab auth before returning to first-community choices" (was line 1918) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn entry as PARKED 5; and its named destination ("the first-community choice") is
+     a withdrawn page.
+   SUCCESSOR: the withdrawal is asserted on the live screen by
+     tests/e2e/vclaw-signin-only.spec.ts:358-362, tests/e2e/community-rail.spec.ts:1191 and
+     tests/e2e/onboarding-agent-defaults.spec.ts:86; the live first-run route is walked by
+     onboarding-docked-cta-screenshots.spec.ts "machine setup and config: docked CTAs" and by
+     this file's "first-community shows the configuration default for the detected harness"
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 1918-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
+
+test("the first-run configuration step defaults the harness for the detected catalog", async ({
   page,
 }) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(page, undefined, {
-    relayWsUrl: "ws://localhost:3000",
-    skipOnboardingSeed: true,
-    skipCommunitySeed: true,
-  });
-  await page.goto("/");
-
-  await expect(
-    page.getByRole("button", { name: /Join a community/ }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: /Create a community/ }),
-  ).toBeVisible();
-  const existing = page.getByRole("button", {
-    name: /I already have a community/,
-  });
-  await expect(existing).toBeVisible();
-  await existing.click();
-  // Owner/member split lives on its own page, mirroring the hub layout.
-  await expect(
-    page.getByRole("heading", { name: "Reconnect to your community" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "I own the community" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "I’m a member or admin" }),
-  ).toBeVisible();
-
-  await page.getByRole("button", { name: "I’m a member or admin" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Reconnect to your community" }),
-  ).toBeVisible();
-  const accessInput = page.getByTestId("invite-redeem-input");
-  await expect(accessInput).toHaveAttribute(
-    "placeholder",
-    "Invite link or community URL",
-  );
-  await accessInput.fill("https://default.example.com");
-  await expect(page.getByTestId("invite-redeem-submit")).toBeEnabled();
-  // Back from the member form returns to the role choice, then to the hub.
-  await page.getByRole("button", { name: "Back" }).click();
-  await expect(
-    page.getByRole("button", { name: "I own the community" }),
-  ).toBeVisible();
-  await page.getByTestId("existing-back").click();
-
-  await page.getByRole("button", { name: /Join a community/ }).click();
-  await expect(
-    page.getByRole("heading", { name: "Join a community" }),
-  ).toBeVisible();
-  await expect(page.getByText("Joining a private community?")).toBeVisible();
-  await expect(page.getByTestId("welcome-join-npub")).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Copy public ID" }),
-  ).toBeVisible();
-  await accessInput.fill("https://default.example.com/invite/abc123");
-  await expect(page.getByTestId("invite-redeem-submit")).toBeEnabled();
-});
-
-test("first-community owner can connect an existing hosted community", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {
-      builderlabAuth: {
-        email: "owner@example.com",
-        expiresAt: "2099-01-01T00:00:00Z",
-      },
-      builderlabIdentity: { pubkey_hex: BLANK_TYLER_IDENTITY.pubkey },
-      builderlabCommunities: [
-        {
-          id: "owned-community",
-          name: "North Star",
-          normalized_host: "north-star.communities.buzz.xyz",
-        },
-      ],
-    },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await expect(page.getByText("North Star")).toBeVisible();
-  await page.getByRole("button", { name: "Connect", exact: true }).click();
-  await expect(
-    page.getByRole("heading", { name: "Build your profile" }),
-  ).toBeVisible();
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.localStorage.getItem("buzz-community-onboarding-transaction.v1"),
-      ),
-    )
-    .toContain('"source":"first-community"');
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.localStorage.getItem("buzz-community-onboarding-transaction.v1"),
-      ),
-    )
-    .toContain("wss://north-star.communities.buzz.xyz");
-  await page.getByTestId("community-profile-back").click();
-  await expect(
-    page.getByRole("heading", { name: "Choose a community" }),
-  ).toBeVisible();
-  await expect(page.getByText("North Star")).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Join a community" }),
-  ).toHaveCount(0);
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.localStorage.getItem("buzz-community-onboarding-transaction.v1"),
-      ),
-    )
-    .toBeNull();
-});
-
-test("first-community owner can create and connect a hosted community", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {},
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await page.getByRole("button", { name: "Sign in to continue" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Finish connecting Buzz" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Connect and continue" }).click();
-  const createSurface = page.getByTestId("hosted-community-create-surface");
-  const surfaceBoxBeforeFeedback = await createSurface.boundingBox();
-  const communityNameInput = page.getByTestId("hosted-community-address-input");
-  await communityNameInput.fill("bee-lab");
-  await expect(communityNameInput).toHaveAttribute("style", /width: 7ch;/);
-  const availabilityFeedback = page.getByText("That address is available.");
-  await expect(availabilityFeedback).toBeVisible();
-  const [feedbackBox, surfaceBox, inputBox, suffixBox] = await Promise.all([
-    availabilityFeedback.boundingBox(),
-    createSurface.boundingBox(),
-    page.getByTestId("hosted-community-address-input").boundingBox(),
-    page.locator("#hosted-community-suffix").boundingBox(),
-  ]);
-  if (
-    !surfaceBoxBeforeFeedback ||
-    !feedbackBox ||
-    !surfaceBox ||
-    !inputBox ||
-    !suffixBox
-  ) {
-    throw new Error("Could not measure hosted community creation layout");
-  }
-  expect(surfaceBox.y).toBe(surfaceBoxBeforeFeedback.y);
-  expect(surfaceBox.height).toBe(surfaceBoxBeforeFeedback.height);
-  const addressLeft = inputBox.x;
-  const addressRight = suffixBox.x + suffixBox.width;
-  expect(
-    Math.abs(
-      (addressLeft + addressRight) / 2 - (surfaceBox.x + surfaceBox.width / 2),
-    ),
-  ).toBeLessThanOrEqual(1);
-  expect(feedbackBox.y).toBeGreaterThanOrEqual(
-    surfaceBox.y + surfaceBox.height,
-  );
-  await page.getByRole("button", { name: "Next" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Build your profile" }),
-  ).toBeVisible();
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.localStorage.getItem("buzz-community-onboarding-transaction.v1"),
-      ),
-    )
-    .toContain("wss://bee-lab.communities.buzz.xyz");
-});
-
-test("hosted community address line stays within the card for a long name", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {},
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  // The 800px app minimum is the worst case for the full-width address line.
-  await page.setViewportSize({ width: 800, height: 720 });
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await page.getByRole("button", { name: "Sign in to continue" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Finish connecting Buzz" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Connect and continue" }).click();
-
-  const createSurface = page.getByTestId("hosted-community-create-surface");
-  const communityNameInput = page.getByTestId("hosted-community-address-input");
-  // A maximum-length (63 char) valid name — the overflow case Wes flagged; the
-  // 7-char check above cannot catch it.
-  const longName = "a".repeat(63);
-  await communityNameInput.fill(longName);
-  await expect(communityNameInput).toHaveValue(longName);
-
-  const [surfaceBox, inputBox, suffixBox] = await Promise.all([
-    createSurface.boundingBox(),
-    communityNameInput.boundingBox(),
-    page.locator("#hosted-community-suffix").boundingBox(),
-  ]);
-  if (!surfaceBox || !inputBox || !suffixBox) {
-    throw new Error("Could not measure hosted community creation layout");
-  }
-  const addressLeft = inputBox.x;
-  const addressRight = suffixBox.x + suffixBox.width;
-  // The composed `<name>.<suffix>` line must stay within the card — no
-  // horizontal overflow past the surface or the 800px window.
-  expect(addressLeft).toBeGreaterThanOrEqual(surfaceBox.x);
-  expect(addressRight).toBeLessThanOrEqual(surfaceBox.x + surfaceBox.width);
-  expect(addressRight).toBeLessThanOrEqual(800);
-  // …and it stays centered within the card.
-  expect(
-    Math.abs(
-      (addressLeft + addressRight) / 2 - (surfaceBox.x + surfaceBox.width / 2),
-    ),
-  ).toBeLessThanOrEqual(2);
-});
-
-test("first-community reports a created community without a relay address", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {
-      builderlabAuth: {
-        email: "owner@example.com",
-        expiresAt: "2099-01-01T00:00:00Z",
-      },
-      builderlabIdentity: { pubkey_hex: BLANK_TYLER_IDENTITY.pubkey },
-      builderlabCreatedCommunity: {
-        id: "hosted-bee-lab",
-        name: "bee-lab",
-      },
-    },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await page.getByRole("textbox", { name: "Community name" }).fill("bee-lab");
-  await expect(page.getByText("That address is available.")).toBeVisible();
-  await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "The community was created, but Builderlab did not return its relay address.",
-  );
-  await expect(
-    page.getByRole("heading", { name: "Build your profile" }),
-  ).toHaveCount(0);
-});
-
-test("first-community X cancels a pending sign-in", async ({ page }) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    { builderlabLoginDelayMs: 5_000 },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await page.getByRole("button", { name: "Sign in to continue" }).click();
-  await expect(page.getByText("Waiting for your browser…")).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Cancel sign-in" }),
-  ).toHaveCount(0);
-  await page.getByRole("button", { name: "Close" }).click();
-  await expect(
-    page.getByRole("button", { name: /Create a community/ }),
-  ).toBeVisible();
-  await expect
-    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
-    .toEqual(expect.arrayContaining(["cancel_builderlab_login"]));
-});
-
-test("first-community owner can replace a mismatched account identity", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {
-      builderlabAuth: {
-        email: "old-owner@example.com",
-        expiresAt: "2099-01-01T00:00:00Z",
-      },
-      builderlabIdentity: {
-        pubkey_hex: "f".repeat(64),
-        // Contradiction: the server npub spells this device's key, not the
-        // bound pubkey_hex the mismatch gate and recovery actions use.
-        npub: npubEncode(BLANK_TYLER_IDENTITY.pubkey),
-      },
-    },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await expect(
-    page.getByRole("heading", {
-      name: "This account uses a different Buzz identity",
-    }),
-  ).toBeVisible();
-  // The account row must show the authoritative bound key's npub, never the
-  // contradictory hosted npub (which here spells the device key) or raw hex.
-  const identityRows = page.getByText(/^Account: npub1/);
-  await expect(identityRows).toContainText(
-    `Account: ${npubEncode("f".repeat(64))}`,
-  );
-  await expect(identityRows).toContainText(
-    `This device: ${npubEncode(BLANK_TYLER_IDENTITY.pubkey)}`,
-  );
-  await expect(identityRows).not.toContainText(
-    `Account: ${npubEncode(BLANK_TYLER_IDENTITY.pubkey)}`,
-  );
-  await expect(page.getByText("f".repeat(64))).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Use this device's identity" })
-    .click();
-  await expect(
-    page.getByRole("textbox", { name: "Community name" }),
-  ).toBeVisible();
-  await expect
-    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
-    .toEqual(
-      expect.arrayContaining([
-        "delete_builderlab_nostr_identity",
-        "bind_builderlab_nostr_identity",
-      ]),
-    );
-});
-
-test("first-community owner recovers from an npub-only account identity", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {
-      builderlabAuth: {
-        email: "old-owner@example.com",
-        expiresAt: "2099-01-01T00:00:00Z",
-      },
-      builderlabIdentity: {
-        // Identity object present, but no authoritative pubkey_hex — only
-        // the independent server npub, spelled for a different key.
-        npub: npubEncode("f".repeat(64)),
-      },
-      builderlabCommunities: [
-        {
-          id: "owned-community",
-          name: "North Star",
-          normalized_host: "north-star.communities.buzz.xyz",
-        },
-      ],
-    },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  // Presence of the identity object must not read as a linked, ready
-  // account: the mismatch recovery modal drives the flow instead.
-  await expect(
-    page.getByRole("heading", {
-      name: "This account uses a different Buzz identity",
-    }),
-  ).toBeVisible();
-  await expect(
-    page.getByText(`Account: ${npubEncode("f".repeat(64))}`),
-  ).toHaveCount(0);
-  await expect(page.getByText("Account: Unavailable")).toBeVisible();
-  await expect(
-    page.getByText(`This device: ${npubEncode(BLANK_TYLER_IDENTITY.pubkey)}`),
-  ).toBeVisible();
-  // No create/connect surface is exposed behind the recovery modal.
-  await expect(page.getByTestId("hosted-community-create-surface")).toHaveCount(
-    0,
-  );
-  await expect(
-    page.getByRole("button", { name: "Connect", exact: true }),
-  ).toHaveCount(0);
-
-  // Recovery rebinds the device key and restores readiness.
-  await page
-    .getByRole("button", { name: "Use this device's identity" })
-    .click();
-  await expect
-    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
-    .toEqual(
-      expect.arrayContaining([
-        "delete_builderlab_nostr_identity",
-        "bind_builderlab_nostr_identity",
-      ]),
-    );
-  await expect(
-    page.getByRole("heading", { name: "Choose a community" }),
-  ).toBeVisible();
-  await expect(page.getByText("North Star")).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Connect", exact: true }),
-  ).toBeVisible();
-});
-
-test("first-community owner never rebinds over a same-key spelling in the hex field", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {
-      builderlabAuth: {
-        email: "old-owner@example.com",
-        expiresAt: "2099-01-01T00:00:00Z",
-      },
-      builderlabIdentity: {
-        // A checksum-valid npub stored in the authoritative hex field,
-        // spelling this very device's key. It is not a hex key: recovery
-        // owns the flow, the spelling never renders as the account's key,
-        // and no delete/rebind of the identity the device already holds
-        // is demanded for it.
-        pubkey_hex: npubEncode(BLANK_TYLER_IDENTITY.pubkey),
-      },
-      builderlabCommunities: [
-        {
-          id: "owned-community",
-          name: "North Star",
-          normalized_host: "north-star.communities.buzz.xyz",
-        },
-      ],
-    },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await expect(
-    page.getByRole("heading", {
-      name: "This account uses a different Buzz identity",
-    }),
-  ).toBeVisible();
-  await expect(page.getByText("Account: Unavailable")).toBeVisible();
-  await expect(
-    page.getByText(`Account: ${npubEncode(BLANK_TYLER_IDENTITY.pubkey)}`),
-  ).toHaveCount(0);
-  await expect(
-    page.getByText(`This device: ${npubEncode(BLANK_TYLER_IDENTITY.pubkey)}`),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Connect", exact: true }),
-  ).toHaveCount(0);
-});
-
-test("first-community owner with a padded same-key hex is ready, not mismatched", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {
-      builderlabAuth: {
-        email: "owner@example.com",
-        expiresAt: "2099-01-01T00:00:00Z",
-      },
-      builderlabIdentity: {
-        // The device's own key, padded and uppercased: the same key after
-        // normalization, so the account is ready — never a mismatch
-        // demanding a delete/rebind of the identity it already holds.
-        pubkey_hex: `  ${BLANK_TYLER_IDENTITY.pubkey.toUpperCase()}  `,
-      },
-    },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await expect(
-    page.getByRole("heading", {
-      name: "This account uses a different Buzz identity",
-    }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("textbox", { name: "Community name" }),
-  ).toBeVisible();
-});
-
-test("first-community explains when the local identity belongs to another account", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {
-      builderlabAuth: {
-        email: "wrong-owner@example.com",
-        expiresAt: "2099-01-01T00:00:00Z",
-      },
-      builderlabIdentity: { pubkey_hex: "e".repeat(64) },
-      builderlabBindError: { code: "pubkey_already_bound" },
-    },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await page
-    .getByRole("button", { name: "Use this device's identity" })
-    .click();
-  await expect(
-    page.getByText(
-      "This device's Buzz identity belongs to a different Builderlab account and can't be moved from here. Sign out, then sign in with the account that already owns this identity.",
-    ),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Finish connecting Buzz" }),
-  ).toBeVisible();
-});
-
-test("back clears Builderlab auth before returning to first-community choices", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    {
-      builderlabAuth: {
-        email: "owner@example.com",
-        expiresAt: "2099-01-01T00:00:00Z",
-      },
-      builderlabIdentity: { pubkey_hex: BLANK_TYLER_IDENTITY.pubkey },
-    },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByTestId("community-choice-create").click();
-  await page.getByRole("button", { name: "Back" }).click();
-  await page.getByTestId("community-choice-create").click();
-  await expect(page.getByRole("button", { name: "Continue" })).toBeVisible();
-});
-
-test("first-community shows the scenario cards for localhost", async ({
-  page,
-}) => {
+  // ENTRY CHANGED, CLAIM NARROWED TO WHAT IS REACHABLE. The old test was the community picker's
+  // "scenario cards for localhost" (all four cards are withdrawn — PARKED 4) and its transition
+  // assertions measured the join card's forward line-slide, which no longer has a card to start
+  // from. Its TAIL is live and is kept byte-identical below: the gated welcome screen's own Back
+  // action re-enters the machine flow at its config step (MEASURED route, probe P1/P10 logs).
   await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
   await page.addInitScript((pubkey) => {
     window.localStorage.setItem(
@@ -1992,35 +1527,24 @@ test("first-community shows the scenario cards for localhost", async ({
   await expect(
     page.getByRole("button", { name: "Join default community" }),
   ).toHaveCount(0);
+  // THE GATE, asserted instead of clicked. Absence asserted positively, then the live control.
   await expect(
-    page.getByRole("button", { name: /Join a community/ }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", {
-      name: /Create a community/,
+    page.getByRole("heading", {
+      name: "Sign in to join the estate community",
+      exact: true,
     }),
   ).toBeVisible();
-
-  await page.getByTestId("community-choice-join").click();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
   await expect(
-    page
-      .getByTestId("welcome-setup")
-      .locator(".buzz-onboarding-transition-line"),
-  ).toHaveAttribute("data-onboarding-direction", "forward");
+    page.getByRole("button", { name: /Join a community/ }),
+  ).toHaveCount(0);
   await expect(
-    page
-      .getByTestId("welcome-setup")
-      .locator(".buzz-onboarding-transition-line"),
-  ).toHaveAttribute("data-onboarding-effect", "line-slide");
-  const joinBack = page.getByTestId("welcome-join-back");
-  await expect(joinBack).toBeVisible();
-  await joinBack.click();
-  await expect(
-    page
-      .getByTestId("welcome-setup")
-      .locator(".buzz-onboarding-transition-line"),
-  ).toHaveAttribute("data-onboarding-direction", "backward");
-
+    page.getByRole("button", { name: /Create a community/ }),
+  ).toHaveCount(0);
+  await expect(page.getByTestId("community-choice-join")).toHaveCount(0);
+  await expect(page.getByTestId("community-choice-create")).toHaveCount(0);
+  await expect(page.getByTestId("community-choice-existing")).toHaveCount(0);
+  await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
   await page.getByTestId("welcome-setup-back").click();
   await expect(page.getByTestId("onboarding-page-config")).toBeVisible();
   await expect(
@@ -2034,55 +1558,15 @@ test("first-community shows the scenario cards for localhost", async ({
   await expect(page.getByTestId("onboarding-finish")).toBeEnabled();
 });
 
-test("first-community direct join reaches profile", async ({ page }) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(page, undefined, {
-    relayWsUrl: "ws://localhost:3000",
-    skipOnboardingSeed: true,
-    skipCommunitySeed: true,
-  });
-  await page.goto("/");
-
-  await page.getByRole("button", { name: /Join a community/ }).click();
-  await page
-    .getByTestId("invite-redeem-input")
-    .fill("wss://onboarding.communities.buzz.xyz");
-  await page.getByTestId("invite-redeem-submit").click();
-
-  await expect(
-    page.getByRole("heading", { name: "Build your profile" }),
-  ).toBeVisible();
-  await expect(page.getByText("Connecting securely…")).toHaveCount(0);
-  await expect(page.getByText("Create an identity key")).toHaveCount(0);
-  await expect
-    .poll(() =>
-      page.evaluate((transactionStorageKey) => {
-        const communitiesRaw = window.localStorage.getItem("buzz-communities");
-        const transactionRaw = window.localStorage.getItem(
-          transactionStorageKey,
-        );
-        const communities = communitiesRaw
-          ? (JSON.parse(communitiesRaw) as Array<{ id: string }>)
-          : [];
-        const transaction = transactionRaw
-          ? (JSON.parse(transactionRaw) as { communityId?: string })
-          : null;
-        return {
-          communityCount: communities.length,
-          transactionMatchesOnlyCommunity:
-            communities.length === 1 &&
-            transaction?.communityId === communities[0]?.id,
-        };
-      }, COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY),
-    )
-    .toEqual({ communityCount: 1, transactionMatchesOnlyCommunity: true });
-});
+/* ── PARKED (16 of 17) — "first-community direct join reaches profile" (was line 2037) ────────────
+   UNREACHABLE IN EVERY MODE: the invite-join entry is the `join` page, refused by the gate; `InviteRedeemForm` renders only
+     on `join`/`member`.
+   SUCCESSOR: the connect->profile machinery it walked IS covered, on a live entry, by this file's passing
+     "community onboarding reuses an existing relay profile".
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 2037-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
 
 test("community onboarding reuses an existing relay profile", async ({
   page,
@@ -2158,52 +1642,13 @@ test("community onboarding reuses an existing relay profile", async ({
   ).toHaveAttribute("data-onboarding-direction", "backward");
 });
 
-test("first-community direct join cancel returns to request access", async ({
-  page,
-}) => {
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript((pubkey) => {
-    window.localStorage.setItem(
-      `buzz-machine-onboarding-complete.v2:${pubkey}`,
-      "true",
-    );
-  }, BLANK_TYLER_IDENTITY.pubkey);
-  await installMockBridge(
-    page,
-    { applyCommunityDelayMs: 5_000 },
-    {
-      relayWsUrl: "ws://localhost:3000",
-      skipOnboardingSeed: true,
-      skipCommunitySeed: true,
-    },
-  );
-  await page.goto("/");
-
-  await page.getByRole("button", { name: /Join a community/ }).click();
-  await page
-    .getByTestId("invite-redeem-input")
-    .fill("wss://onboarding.communities.buzz.xyz");
-  await page.getByTestId("invite-redeem-submit").click();
-  await expect(page.getByText("Connecting securely…")).toBeVisible();
-  await page.getByRole("button", { name: "Cancel" }).click();
-
-  await expect(
-    page.getByRole("heading", { name: "Join a community" }),
-  ).toBeVisible();
-  await expect(page.getByTestId("community-change-overlay")).toHaveCount(0);
-  await expect(page.getByText("Create an identity key")).toHaveCount(0);
-  await expect
-    .poll(() =>
-      page.evaluate(
-        (storageKey) => ({
-          communities: window.localStorage.getItem("buzz-communities"),
-          transaction: window.localStorage.getItem(storageKey),
-        }),
-        COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY,
-      ),
-    )
-    .toEqual({ communities: null, transaction: null });
-});
+/* ── PARKED (17 of 17) — "first-community direct join cancel returns to request access" (was line 2161) ────────────
+   UNREACHABLE IN EVERY MODE: same withdrawn join entry as PARKED 16; it also re-asserts the join page heading after Cancel.
+   SUCCESSOR: as PARKED 16.
+   RESTORE: set the gate constant false (`src/features/communities/ui/WelcomeSetup.tsx:45 `VCLAW_SPRINT_1_PICKER_HIDDEN``); the surface and this test come back
+   unchanged, because nothing was deleted from the product.
+   BODY PRESERVED VERBATIM: onboarding.spec.ts.withdrawn-coverage.txt (original lines 2161-None).
+   DECISION: REPORT.md §PARKED — this coverage is handed to the operator, not dropped silently. */
 
 test("canceling a join to an existing inactive community preserves it", async ({
   page,
@@ -2469,17 +1914,45 @@ test("connected first-community profile keeps navigation inside the card and bal
   expect(urlBox.y + urlBox.height).toBeLessThanOrEqual(
     dialogBox.y + dialogBox.height,
   );
-  const [livePreviewBox, editorBox] = await Promise.all([
-    page.getByTestId("community-avatar-live-preview").boundingBox(),
-    page.getByTestId("community-avatar-editor").boundingBox(),
-  ]);
-  if (!livePreviewBox || !editorBox) {
-    throw new Error("Could not measure avatar preview/editor spacing");
-  }
+  // The dialog plays a scale-in entry animation, and it is still running at this point: the
+  // computed `transform` at measurement time ranged `matrix3d(0.984279…)` to
+  // `matrix3d(0.995201…)` with `opacity: 0.686-0.904` over the ten repeats, and the dialog's
+  // OWN box moves while the test reads it - measured as x = 189.069 (dialog sampled first),
+  // 187.232 (dialog re-sampled ~50 ms later, in the same frame as the two children) and
+  // 180.000 (settled, 800 ms after that). Each
+  // `boundingBox()` call is its own round trip, so the comparison below added the dialog's
+  // motion between those two round trips to a quantity that is meant to be a pure layout
+  // ratio - a measurement artefact, not a layout fact.
+  //
+  // MEASURED 2026-10-03 (run-A/run-B logs in .prime/handoff/agents-sprint/lane-flakes):
+  // split-sample deviation 0.40-3.43 px across ten repeats (0.40, 1.38, 1.59, 1.61, 1.84,
+  // 2.18, 2.72, 2.77, 2.86, 3.43) and 4.2331 px in the run-A failure - the two round trips
+  // straddled more of the animation in that sample. The SAME three boxes read in ONE frame
+  // deviate by <= 0.00003 px in all ten repeats, and the settled layout is exactly symmetric
+  // (left inset 236 - 180 = 56 px, gutter 484 - (236 + 192) = 56 px): the layout never
+  // disagreed with itself, so widening the 4 px bound would have hidden a measurement bug.
+  // Read all three boxes in one frame instead; the comparison, its semantics and its 4 px
+  // bound below are unchanged.
+  const avatarFrameBoxes = await page.evaluate(() => {
+    const box = (testId: string) => {
+      const element = document.querySelector(`[data-testid="${testId}"]`);
+      if (!element) throw new Error(`Could not measure ${testId}`);
+      const rect = element.getBoundingClientRect();
+      return { height: rect.height, width: rect.width, x: rect.x, y: rect.y };
+    };
+    return {
+      dialogBox: box("community-avatar-editor-key-frame"),
+      editorBox: box("community-avatar-editor"),
+      livePreviewBox: box("community-avatar-live-preview"),
+    };
+  });
+  const livePreviewBox = avatarFrameBoxes.livePreviewBox;
+  const editorBox = avatarFrameBoxes.editorBox;
+  const dialogBoxAtFrame = avatarFrameBoxes.dialogBox;
   expect(
     Math.abs(
       livePreviewBox.x -
-        dialogBox.x -
+        dialogBoxAtFrame.x -
         (editorBox.x - (livePreviewBox.x + livePreviewBox.width)),
     ),
   ).toBeLessThanOrEqual(4);
@@ -2713,9 +2186,16 @@ test("connected first-community profile keeps navigation inside the card and bal
   );
 
   await backButton.click();
+  // RE-POINTED destination, MEASURED (probe P4, run3 log): cancelling the first-community profile
+  // transaction returns to the first-run screen, whose heading the gate changes to
+  // `Sign in to join the estate community` (WelcomeSetup.tsx:224-229). The withdrawn copy and the
+  // withdrawn card are asserted ABSENT — the old assertion would have passed on a page that can no
+  // longer render at all.
   await expect(
-    page.getByRole("heading", { name: "Join a community" }),
+    page.getByRole("heading", { name: "Sign in to join the estate community" }),
   ).toBeVisible();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("community-choice-join")).toHaveCount(0);
   await expect
     .poll(() =>
       page.evaluate(
@@ -4321,6 +3801,30 @@ test("onboarding relay reconnect — connected without a prior click does not sh
 test("membership denied shows all four affordances and change-community edits non-destructively", async ({
   page,
 }) => {
+  // The fake relay under test must stay PENDING while the assertions below require the
+  // fields to be frozen. MEASURED 2026-10-03 (.prime/handoff/agents-sprint/lane-flakes,
+  // run-C log): against a hostname that does not resolve, the probe settles ~19 ms after
+  // the submit commit - the raw WebSocket errors in ~2 ms and the `disabled` attribute is
+  // cleared 17.8-19.2 ms after it is set (five samples). The `toBeDisabled()` assertion can
+  // then only pass if its FIRST evaluation lands inside that ~19 ms window; once the window
+  // closes the field stays enabled for the whole 10 s retry budget, which is exactly the
+  // pre-existing failure (`24 x locator resolved ... unexpected value "enabled"`). No wait
+  // can lengthen that window, and retrying or widening the assertion would not test the
+  // invariant. So the URL under test points at a socket in THIS test that accepts the
+  // connection and never answers: the browser's WebSocket handshake stays pending and the
+  // product's OWN 4000 ms probe timeout is what ends the pending window.
+  const stalledSockets: Socket[] = [];
+  const stalledRelay = createServer((socket) => {
+    // Accept and never reply. `unref` keeps an abandoned probe from holding the worker open.
+    stalledSockets.push(socket);
+    socket.on("error", () => {});
+    socket.unref();
+  });
+  await new Promise<void>((resolve) =>
+    stalledRelay.listen(0, "127.0.0.1", resolve),
+  );
+  stalledRelay.unref();
+  const stalledRelayUrl = `wss://127.0.0.1:${(stalledRelay.address() as AddressInfo).port}`;
   await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
   await installMockBridge(
     page,
@@ -4356,9 +3860,7 @@ test("membership denied shows all four affordances and change-community edits no
 
   // Change the relay URL to a new one. The probe will time out for a fake URL
   // so we wait for the "Use anyway" button.
-  await overlay
-    .locator("#community-edit-url")
-    .fill("wss://new-relay.example.com");
+  await overlay.locator("#community-edit-url").fill(stalledRelayUrl);
   await overlay.getByRole("button", { name: "Save changes" }).click();
 
   // The fields are frozen while the probe is pending, so the saved URL and
@@ -4369,6 +3871,10 @@ test("membership denied shows all four affordances and change-community edits no
     overlay.getByRole("button", { name: "Use anyway" }),
   ).toBeVisible();
   await overlay.getByRole("button", { name: "Use anyway" }).click();
+  // The pending window this test needs is over: drop the stall so the remount sees an
+  // unreachable relay exactly as it did before.
+  stalledRelay.close();
+  for (const stalledSocket of stalledSockets) stalledSocket.destroy();
 
   // The community update triggers a remount (reinitKey bump). The persisted
   // community should now point to the new relay URL.
@@ -4382,7 +3888,7 @@ test("membership denied shows all four affordances and change-community edits no
         return communities[0]?.relayUrl ?? null;
       }),
     )
-    .toBe("wss://new-relay.example.com");
+    .toBe(stalledRelayUrl);
 
   // Identity was NOT wiped — the override storage key is still intact.
   await expect

@@ -204,10 +204,25 @@ async function expectHorizontalCardTransition(
   }
 }
 
-test("machine onboarding: landing, backup, setup docked CTAs", async ({
+test("machine onboarding: the one-door landing, and the withdrawn key pages", async ({
   page,
 }) => {
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  // ── WHAT THIS TEST USED TO WALK, AND WHY IT NO LONGER CAN ─────────────────────────────────────
+  // It used to be the machine flow's screenshot tour: landing -> "Use an existing key" -> the
+  // import page -> "Create a new identity key" -> key intro -> the generated-key/backup sheet ->
+  // "Download your key" -> setup -> config. The first two of those clicks, and every page after
+  // them, are withdrawn by the operator directive of 2026-10-03 ("VClaw sign-in is the DEFAULT and
+  // THE ONLY method", and the human must not be walked through handling a device key). The gate is
+  // `VCLAW_SIGN_IN_ONLY = true` in src/features/onboarding/ui/MachineOnboardingFlow.tsx: it stops
+  // `identity-key-intro`, `identity-key-help`, `key-import` and `backup` from RENDERING, and
+  // `vclawSignInOnlyRefusesPage` (read at the initial-page normaliser AND at the `showPage` choke
+  // point) stops them being NAVIGATED to as a way to sign in.
+  // SO: the tour is replaced by the two claims that are still measurable on this screen — the ONE
+  // forward control, and the WITHDRAWAL itself, asserted ABSENT rather than merely unclicked (a
+  // stronger statement than the removed clicks ever made). The setup/config half of the tour lives
+  // in `machine setup and config: docked CTAs` below, reached by the route that still exists; the
+  // withdrawn pages' own geometry and screenshots cannot be asserted anywhere, and the parent's
+  // report records that as the coverage this directive removes.
   await installMockBridge(page, undefined, {
     skipCommunitySeed: true,
     skipOnboardingSeed: true,
@@ -219,15 +234,65 @@ test("machine onboarding: landing, backup, setup docked CTAs", async ({
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOT_DIR}/01-landing.png` });
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
+  // THE ONE FORWARD CONTROL — the thing that replaced both withdrawn buttons.
+  const signIn = page.getByRole("button", { name: "Login with VClaw" });
+  await expect(signIn).toBeVisible();
+  await expect(signIn).toBeEnabled();
+  await expect(page.getByTestId("vclaw-org-sign-in")).toBeVisible();
+
+  // WITHDRAWN, ASSERTED ABSENT. `toHaveCount(0)` is the strong form: a CSS hide would satisfy
+  // "not visible", but not this.
+  await expect(
+    page.getByRole("button", { name: "Create a new identity key" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("community-choice-join")).toHaveCount(0);
+  await expect(page.getByTestId("identity-key-help-trigger")).toHaveCount(0);
+  await expect(page.getByTestId("identity-key-help-dialog")).toHaveCount(0);
+
+  // NOT MERELY UNRENDERED — UNREACHABLE. Nothing on this screen navigates to a key page, and the
+  // gate refuses the navigation even if it were asked for, so none of the four pages is in the DOM
+  // after the screen has settled.
+  await waitForAnimations(page);
+  await expect(page.getByTestId("onboarding-page-key-intro")).toHaveCount(0);
+  await expect(page.getByTestId("onboarding-page-backup")).toHaveCount(0);
+  await expect(page.getByTestId("onboarding-page-download")).toHaveCount(0);
+});
+
+test("machine key import: docked CTA geometry and the recovery sheets", async ({
+  page,
+}) => {
+  // ── WHY THIS TEST BOOTS LOST MODE ─────────────────────────────────────────────────────────────
+  // Its old entry was the landing's "Use an existing key" button, which the one-door gate withdrew
+  // (measured count: 0). The import SURFACE is not withdrawn — the directive keeps `key-import` and
+  // `backup` reachable for an operator whose identity the app reports LOST, which is the app's own
+  // recovery entry — and that boot opens DIRECTLY on this page, with the same card, the same input
+  // and the same two recovery sheets. Every geometry assertion below is byte-identical to before.
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await installMockBridge(
+    page,
+    { identityLost: true },
+    { skipOnboardingSeed: true },
+  );
+  await page.goto("/");
+
+  // The gate, asserted on the way in.
+  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Enter your private key" }),
   ).toBeVisible();
-  await expectHorizontalCardTransition(
-    page,
-    "machine-onboarding-gate",
-    "forward",
-  );
+  await expect(
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Create a new identity key" }),
+  ).toHaveCount(0);
+  await expect(page.getByTestId("onboarding-page-key-intro")).toHaveCount(0);
+
   const importCard = page.getByTestId("onboarding-content-card");
   await expect(importCard).toBeVisible();
   await expectSharedCardGeometry(page);
@@ -236,11 +301,6 @@ test("machine onboarding: landing, backup, setup docked CTAs", async ({
   await expect(importCard).toHaveCSS("background-color", "rgb(255, 255, 255)");
   await expect(page.getByTestId("nostr-import-card")).toHaveCount(0);
   await expect(importCard.locator("svg filter")).toHaveCount(0);
-  const onboardingBack = page.getByTestId("onboarding-back");
-  await expect(onboardingBack).toHaveCSS("width", "52px");
-  await expect(onboardingBack).toHaveCSS("height", "52px");
-  await expect(onboardingBack.locator("svg")).toHaveCSS("width", "24px");
-  await expect(onboardingBack.locator("svg")).toHaveCSS("height", "24px");
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOT_DIR}/01b-enter-key.png` });
 
@@ -268,151 +328,170 @@ test("machine onboarding: landing, backup, setup docked CTAs", async ({
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOT_DIR}/01e-restore-backup.png` });
 
-  // The first Back returns to key selection; the second leaves import.
+  // Back returns to key selection. The old second Back left import for the landing, to click the
+  // now-withdrawn "Create a new identity key"; that leg is gone with the button, and the gate it
+  // used to walk is asserted above instead.
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(importCard).toBeVisible();
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Create a new identity key" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Create a private identity key" }),
-  ).toBeVisible();
-  await expectHorizontalCardTransition(
+});
+
+test("machine key import remains usable in a short viewport", async ({
+  page,
+}) => {
+  // Same fixture change as the geometry test above: the landing's "Use an existing key" is
+  // withdrawn, and the lost-mode boot IS the import page. The layout assertions are byte-identical.
+  await page.setViewportSize({ width: 900, height: 620 });
+  await installMockBridge(
     page,
-    "onboarding-page-key-intro",
-    "forward",
+    { identityLost: true },
+    { skipOnboardingSeed: true },
   );
-  await expectUsesFullCardWidth(page.getByTestId("onboarding-key-guidance"));
-  const guidanceIcons = page.getByTestId("identity-key-guidance-icon");
-  await expect(guidanceIcons).toHaveCount(3);
-  for (const icon of await guidanceIcons.all()) {
-    await expect(icon).toHaveCSS("color", "rgb(23, 23, 23)");
-    await expect(icon).toHaveClass(/bg-\[#e2e2e2\]\/30/);
-  }
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOT_DIR}/02-key-introduction.png` });
-  await page.getByRole("button", { name: "Create my private key" }).click();
-  await expect(
-    page.getByRole("heading", {
-      name: "Your private identity key",
-    }),
-  ).toBeVisible();
-  await expectHorizontalCardTransition(
-    page,
-    "onboarding-page-backup",
-    "forward",
-  );
-  await expectSharedCardGeometry(page);
-  const keyGeometry = await page.evaluate(() => {
-    const keyWell = document
-      .querySelector('[data-testid="backup-key-well"]')
+  await page.goto("/");
+
+  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
+  const heading = page.getByRole("heading", { name: "Enter your private key" });
+  const input = page.getByLabel("Private key", { exact: true });
+  const footer = page.getByTestId("onboarding-footer-slot");
+  await expect(heading).toBeVisible();
+  await expect(input).toBeVisible();
+  await expect(footer).toBeVisible();
+
+  const layout = await page.evaluate(() => {
+    const heading = document.querySelector("h1")?.getBoundingClientRect();
+    const input = document
+      .querySelector<HTMLInputElement>("#nostr-private-key")
       ?.getBoundingClientRect();
-    const keyWellStyles = window.getComputedStyle(
-      document.querySelector('[data-testid="backup-key-well"]') ??
-        document.documentElement,
-    );
-    const backupRow = document
-      .querySelector('[data-testid="backup-option-password"]')
+    const footer = document
+      .querySelector('[data-testid="onboarding-footer-slot"]')
       ?.getBoundingClientRect();
-    const copyButton = document
-      .querySelector('[data-testid="backup-copy-key"]')
-      ?.getBoundingClientRect();
-    const keyValue = document.querySelector('[data-testid="backup-key-value"]');
-    const keyRows = keyValue
-      ? (() => {
-          const range = document.createRange();
-          range.selectNodeContents(keyValue);
-          return new Set(
-            Array.from(range.getClientRects()).map((rect) =>
-              Math.round(rect.top),
-            ),
-          ).size;
-        })()
-      : 0;
     return {
-      backupRowHeight: backupRow?.height ?? 0,
-      backupRowWidth: backupRow?.width ?? 0,
-      copyButtonHeight: copyButton?.height ?? 0,
-      keyRows,
-      keyWellPaddingLeft: keyWellStyles.paddingLeft,
-      keyWellPaddingRight: keyWellStyles.paddingRight,
-      keyWellHeight: keyWell?.height ?? 0,
-      keyWellWidth: keyWell?.width ?? 0,
+      footerTop: footer?.top ?? 0,
+      headingBottom: heading?.bottom ?? 0,
+      inputBottom: input?.bottom ?? 0,
+      inputTop: input?.top ?? 0,
+      clientWidth: document.documentElement.clientWidth,
+      scrollHeight: document.documentElement.scrollHeight,
+      scrollWidth: document.documentElement.scrollWidth,
     };
   });
-  expect(keyGeometry.keyWellWidth).toBeCloseTo(512, 0);
-  expect(keyGeometry.keyWellHeight).toBeCloseTo(122, 0);
-  expect(keyGeometry.keyRows).toBe(2);
-  expect(keyGeometry.keyWellPaddingLeft).toBe("16px");
-  expect(keyGeometry.keyWellPaddingRight).toBe("16px");
-  expect(keyGeometry.copyButtonHeight).toBeCloseTo(32, 0);
-  expect(keyGeometry.backupRowWidth).toBeCloseTo(512, 0);
-  expect(keyGeometry.backupRowHeight).toBeCloseTo(48, 0);
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOT_DIR}/02-backup.png` });
+  expect(layout.inputTop).toBeGreaterThan(layout.headingBottom);
+  expect(layout.footerTop).toBeGreaterThan(layout.inputBottom);
+  expect(layout.scrollHeight).toBeGreaterThanOrEqual(620);
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
 
-  const backupOption = page.getByTestId("backup-option-password");
-  await backupOption.hover();
-  await expect(backupOption).not.toHaveCSS(
-    "background-color",
-    "rgba(0, 0, 0, 0)",
+test("the withdrawn key-help surface leaves the first-run card contained", async ({
+  page,
+}) => {
+  // ── THE HELP SURFACE IS WITHDRAWN WITH THE KEY STEP IT BELONGED TO ────────────────────────────
+  // This test used to walk landing -> key intro -> the in-card "Learn how identity keys work"
+  // dialog and prove the dialog stayed inside the onboarding card at a small viewport. The key-intro
+  // step and the dialog are withdrawn by the one-door gate (`VCLAW_SIGN_IN_ONLY`; `identity-key-help`
+  // is one of the four hidden pages, and the landing no longer renders the dialog at all), so there
+  // is no dialog left to measure. The claim is RE-POINTED rather than dropped: the first-run screen
+  // that replaced it must stay contained at the same viewport, and the withdrawn surface is asserted
+  // ABSENT. The behavioural half of the removal — no trigger, no seen-marker, and the dialog staying
+  // gone across a reload — is owned by `identity-key-help.spec.ts`, which is the file for it.
+  // MEASURED: the landing is the gate shell itself; it has no `onboarding-content-card` and no
+  // `onboarding-step-dots` (those belong to the inner pages), so containment is measured on the
+  // gate's own box and on the one forward control inside it.
+  await page.setViewportSize({ width: 900, height: 650 });
+  await installMockBridge(page, undefined, {
+    skipCommunitySeed: true,
+    skipOnboardingSeed: true,
+  });
+  await page.goto("/");
+
+  const gate = page.getByTestId("machine-onboarding-gate");
+  await expect(gate).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Login with VClaw" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("vclaw-org-field")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Learn how identity keys work" }),
+  ).toHaveCount(0);
+  await expect(page.getByTestId("identity-key-help-dialog")).toHaveCount(0);
+  await expect(page.getByTestId("identity-key-help-body")).toHaveCount(0);
+  await expect(page.getByTestId("onboarding-page-key-intro")).toHaveCount(0);
+  await waitForAnimations(page);
+  await page.screenshot({
+    path: `${SHOT_DIR}/02f-first-run-one-door.png`,
+  });
+
+  const geometry = await gate.evaluate((element) => {
+    const signIn = element.querySelector<HTMLElement>(
+      '[data-testid="vclaw-org-sign-in"]',
+    );
+    const gateBox = element.getBoundingClientRect();
+    const signInBox = signIn?.getBoundingClientRect();
+    return {
+      clientWidth: document.documentElement.clientWidth,
+      gateLeft: gateBox.left,
+      gateRight: gateBox.right,
+      right: signInBox?.right ?? 0,
+      signInLeft: signInBox?.left ?? 0,
+      scrollWidth: document.documentElement.scrollWidth,
+    };
+  });
+  expect(geometry.gateLeft).toBeGreaterThanOrEqual(0);
+  expect(geometry.gateRight).toBeLessThanOrEqual(geometry.clientWidth);
+  // The ONE forward control is inside the shell, not hanging off it.
+  expect(geometry.signInLeft).toBeGreaterThanOrEqual(geometry.gateLeft);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.gateRight);
+  expect(geometry.scrollWidth).toBe(geometry.clientWidth);
+});
+
+test("machine setup and config: docked CTAs", async ({ page }) => {
+  // ── THE SETUP AND CONFIG HALF OF THE OLD TOUR, ON THE ROUTE THAT STILL EXISTS ──────────────────
+  // This is the second half of the old `machine onboarding: landing, backup, setup docked CTAs`
+  // test body, byte-identical from the setup heading onward, with a different ENTRY. The old entry
+  // was `onboarding-next` on the generated-key sheet, which is withdrawn; the reachable entry to
+  // the setup step is the app's own re-entry: an identity that has already finished machine
+  // onboarding but has NO community (`skipCommunitySeed` alone) boots on the gated welcome screen,
+  // whose Back action resumes the machine flow at its config step.
+  // MEASURED ROUTE: welcome-setup (heading "Sign in to join the estate community") ->
+  // `welcome-setup-back` -> `onboarding-page-config` -> `onboarding-back` -> `onboarding-page-2`
+  // (heading "Connect your AI provider").
+  await installMockBridge(page, undefined, { skipCommunitySeed: true });
+  await page.goto("/");
+
+  // The gate is asserted on the way in, not clicked through, and the withdrawn picker is asserted
+  // ABSENT (the same pattern the sibling lanes use).
+  await expect(
+    page.getByRole("heading", {
+      name: "Sign in to join the estate community",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("community-choice-join")).toHaveCount(0);
+  await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
+
+  await page.getByTestId("welcome-setup-back").click();
+  await expect(page.getByTestId("onboarding-page-config")).toBeVisible();
+  await page.getByTestId("onboarding-back").click();
+  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
+  await expectHorizontalCardTransition(page, "onboarding-page-2", "backward");
+
+  // MOVED HERE from the old landing fixture: two claims that fixture can no longer carry, measured
+  // on the machine pages instead of dropped.
+  //   (1) the docked back control's size — the lost-mode import page the old test measured it on
+  //       does not offer a chrome Back at all, so it is measured on the pages that do;
+  //   (2) the gate's inner-page chrome: the chartreuse fill keeps the dot grid layered over the
+  //       chartreuse -> light-blue gradient, which the landing screen does not have.
+  const onboardingBack = page.getByTestId("onboarding-back");
+  await expect(onboardingBack).toHaveCSS("width", "52px");
+  await expect(onboardingBack).toHaveCSS("height", "52px");
+  await expect(onboardingBack.locator("svg")).toHaveCSS("width", "24px");
+  await expect(onboardingBack.locator("svg")).toHaveCSS("height", "24px");
+  const gate = page.getByTestId("machine-onboarding-gate");
+  await expect(gate).toHaveCSS(
+    "background-image",
+    /radial-gradient\(.*\), linear-gradient\(.*rgb\(215, 215, 46\).*rgb\(215, 231, 246\)\)/s,
   );
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOT_DIR}/02a-backup-option-hover.png` });
+  await expect(gate).toHaveCSS("color", "rgb(23, 23, 23)");
 
-  // The generated key is readable at rest. Hovering the well blurs it and
-  // replaces the key with the copy action; the reveal eye is intentionally gone.
-  const keyValue = page.getByTestId("backup-key-value");
-  const keyWell = page.getByTestId("backup-key-well");
-  const copyButton = page.getByTestId("backup-copy-key");
-  await expect(keyValue).toBeVisible();
-  await expect(keyValue).toContainText("nsec1mock");
-  await expect(page.getByTestId("backup-reveal-key")).toHaveCount(0);
-  await expect(copyButton).toHaveCSS("opacity", "0");
-  await keyWell.hover();
-  await expect(keyValue).toHaveCSS("filter", /blur\(4px\)/);
-  await expect(copyButton).toHaveCSS("opacity", "1");
-  await expect(copyButton).toBeEnabled();
-  await copyButton.click();
-  await expect(copyButton).toContainText("Copied to clipboard");
-  await expect(keyValue).toContainText("nsec1mock");
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOT_DIR}/02b-backup-copy.png` });
-
-  // The locked-backup action is part of the generated-key sheet.
-  await page.getByTestId("backup-option-password").click();
-  await expect(page.getByTestId("onboarding-page-download")).toBeVisible();
-  await expectHorizontalCardTransition(
-    page,
-    "onboarding-page-download",
-    "forward",
-  );
-  const passwordPanel = page.getByTestId("backup-password-panel");
-  await expect(passwordPanel).toBeVisible();
-  await expectUsesFullCardWidth(passwordPanel);
-  await expect(passwordPanel).not.toHaveClass(/buzz-card-textured/);
-  await expect(passwordPanel).toHaveCSS("padding-left", "0px");
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOT_DIR}/02d-backup-password.png` });
-
-  await page.getByTestId("backup-passphrase-generate").click();
-  const generatorPopover = page.getByRole("dialog");
-  await expect(generatorPopover).toBeVisible();
-  await expect(generatorPopover).not.toHaveClass(/buzz-card-textured/);
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOT_DIR}/02e-backup-generator.png` });
-  await page.keyboard.press("Escape");
-
-  await page.getByTestId("backup-return-to-onboarding").click();
-  await expect(page.getByTestId("onboarding-page-backup")).toBeVisible();
-  await expectHorizontalCardTransition(
-    page,
-    "onboarding-page-backup",
-    "backward",
-  );
-  await page.getByTestId("onboarding-next").click();
   await expect(
     page.getByRole("heading", { name: "Connect your AI provider" }),
   ).toBeVisible();
@@ -584,83 +663,6 @@ test("machine onboarding: landing, backup, setup docked CTAs", async ({
   );
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOT_DIR}/03f-api-return.png` });
-});
-
-test("machine key import remains usable in a short viewport", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 900, height: 620 });
-  await installMockBridge(page, undefined, {
-    skipCommunitySeed: true,
-    skipOnboardingSeed: true,
-  });
-  await page.goto("/");
-  await page.getByRole("button", { name: "Use an existing key" }).click();
-
-  const heading = page.getByRole("heading", { name: "Enter your private key" });
-  const input = page.getByLabel("Private key", { exact: true });
-  const footer = page.getByTestId("onboarding-footer-slot");
-  await expect(heading).toBeVisible();
-  await expect(input).toBeVisible();
-  await expect(footer).toBeVisible();
-
-  const layout = await page.evaluate(() => {
-    const heading = document.querySelector("h1")?.getBoundingClientRect();
-    const input = document
-      .querySelector<HTMLInputElement>("#nostr-private-key")
-      ?.getBoundingClientRect();
-    const footer = document
-      .querySelector('[data-testid="onboarding-footer-slot"]')
-      ?.getBoundingClientRect();
-    return {
-      footerTop: footer?.top ?? 0,
-      headingBottom: heading?.bottom ?? 0,
-      inputBottom: input?.bottom ?? 0,
-      inputTop: input?.top ?? 0,
-      clientWidth: document.documentElement.clientWidth,
-      scrollHeight: document.documentElement.scrollHeight,
-      scrollWidth: document.documentElement.scrollWidth,
-    };
-  });
-  expect(layout.inputTop).toBeGreaterThan(layout.headingBottom);
-  expect(layout.footerTop).toBeGreaterThan(layout.inputBottom);
-  expect(layout.scrollHeight).toBeGreaterThanOrEqual(620);
-  expect(layout.scrollWidth).toBe(layout.clientWidth);
-});
-
-test("identity-key help stays inside the onboarding card", async ({ page }) => {
-  await page.setViewportSize({ width: 900, height: 650 });
-  await installMockBridge(page, undefined, {
-    skipCommunitySeed: true,
-    skipOnboardingSeed: true,
-  });
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
-  await expect(
-    page.getByRole("button", { name: "Learn how identity keys work" }),
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Learn how identity keys work" })
-    .click();
-
-  const help = page.getByTestId("identity-key-help-dialog");
-  await expect(help).toBeVisible();
-  await expect(page.getByTestId("onboarding-step-dots")).toHaveCount(0);
-  await expect(
-    help.getByRole("heading", { name: "What’s an identity key?" }),
-  ).toBeVisible();
-  await expectUsesFullCardWidth(help.getByTestId("identity-key-help-body"));
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOT_DIR}/02f-identity-key-help.png` });
-  const geometry = await help.evaluate((element) => ({
-    clientWidth: document.documentElement.clientWidth,
-    left: element.getBoundingClientRect().left,
-    right: element.getBoundingClientRect().right,
-    scrollWidth: document.documentElement.scrollWidth,
-  }));
-  expect(geometry.left).toBeGreaterThanOrEqual(0);
-  expect(geometry.right).toBeLessThanOrEqual(geometry.clientWidth);
-  expect(geometry.scrollWidth).toBe(geometry.clientWidth);
 });
 
 test("relay onboarding: profile and avatar docked CTAs", async ({ page }) => {

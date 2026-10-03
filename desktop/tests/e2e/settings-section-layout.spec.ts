@@ -97,13 +97,35 @@ test("Profile sections keep visible cards and aligned actions", async ({
   ).toBeVisible();
   await expect(page.getByTestId("profile-identity-details")).toBeHidden();
 
+  // The section holds TWO cards now: the non-destructive "Sign out" and the
+  // destructive "Delete my data" (operator question, 2026-10-03 — the section
+  // used to be titled "Sign out" while offering only the destructive action).
+  // Scope each assertion to its own card, and assert the counts rather than
+  // "the text appears": a loose getByText("Sign out") would now match both the
+  // heading and the button and could pass while the section said one thing and
+  // did another.
   const signOut = page.getByTestId("settings-signout");
-  const signOutCard = signOut.locator('[data-slot="settings-section-card"]');
-  await expect(signOutCard).toBeVisible();
+  const vclawCard = signOut
+    .getByTestId("signout-vclaw-group")
+    .locator('[data-slot="settings-section-card"]');
+  await expect(vclawCard).toBeVisible();
   await expect(
-    signOutCard.getByRole("button", { name: "Delete my data" }),
+    vclawCard.getByRole("button", { name: "Sign out", exact: true }),
   ).toBeVisible();
-  await expect(signOut.getByText("Sign out", { exact: true })).toHaveCount(1);
+
+  const deleteCard = signOut
+    .getByTestId("signout-delete-group")
+    .locator('[data-slot="settings-section-card"]');
+  await expect(deleteCard).toBeVisible();
+  await expect(
+    deleteCard.getByRole("button", { name: "Delete my data" }),
+  ).toBeVisible();
+  await expect(
+    signOut.getByRole("heading", { name: "Sign out", exact: true }),
+  ).toHaveCount(1);
+  await expect(
+    signOut.getByRole("button", { name: "Sign out", exact: true }),
+  ).toHaveCount(1);
   await expect(
     signOut.getByText("Sign out of Buzz", { exact: true }),
   ).toHaveCount(0);

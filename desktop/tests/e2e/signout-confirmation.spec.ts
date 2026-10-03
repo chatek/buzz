@@ -1,10 +1,16 @@
 /**
- * E2E tests for the destructive sign-out confirmation flow.
+ * E2E tests for the two actions in Settings › Profile: **Sign out** (clears the
+ * cached vclaw session; key and local data stay) and **Delete my data** (wipes
+ * the identity key and all local data, then relaunches).
  *
- * Signing out wipes the identity key and all local data, so the dialog gates
- * "Delete My Data" behind two explicit steps:
+ * The destructive action is gated behind two explicit steps:
  *   1. backup — check "I have saved my private key"
  *   2. typed confirmation — type the exact phrase "wipe all my data"
+ *
+ * The sign-out action is NOT gated, because nothing it does needs recovering
+ * from — and the first test below asserts that it stays that way, since the two
+ * buttons sitting in one section is exactly the arrangement in which they could
+ * be collapsed back into one by a later edit.
  */
 import { expect, type Page, test } from "@playwright/test";
 
@@ -20,6 +26,45 @@ async function openSignOutDialog(page: Page) {
   await page.getByTestId("signout-open-dialog").click();
   await expect(page.getByRole("alertdialog")).toBeVisible({ timeout: 5_000 });
 }
+
+test("Sign out clears the vclaw session without the destructive wipe", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/");
+  await openSettings(page, "profile");
+
+  // The non-destructive control, in the same section, with no confirmation
+  // dialog and no typed phrase.
+  const signOutButton = page.getByTestId("signout-vclaw");
+  await signOutButton.scrollIntoViewIfNeeded();
+  await expect(signOutButton).toBeVisible();
+  await signOutButton.click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & { __BUZZ_E2E_COMMANDS__?: string[] }
+          ).__BUZZ_E2E_COMMANDS__?.includes("vclaw_oidc_sign_out") ?? false,
+      ),
+    )
+    .toBe(true);
+
+  // …and the destructive command was NOT the one that ran.
+  const commands = await page.evaluate(
+    () =>
+      (window as Window & { __BUZZ_E2E_COMMANDS__?: string[] })
+        .__BUZZ_E2E_COMMANDS__ ?? [],
+  );
+  expect(commands).not.toContain("sign_out");
+
+  // The identity is still here: the profile card still shows the key actions a
+  // wiped app cannot show, and the section still offers both actions.
+  await expect(page.getByTestId("signout-open-dialog")).toBeVisible();
+  await expect(page.getByTestId("settings-signout")).toContainText("Sign out");
+});
 
 test("delete button unlocks only after backup + typed phrase", async ({
   page,

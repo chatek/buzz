@@ -12670,6 +12670,19 @@ export function maybeInstallE2eTauriMocks() {
           sig: "e2e-signed-nostr-binding",
         });
       }
+      case "vclaw_oidc_sign_out":
+        // Production clears the cached vclaw session under the `vclaw-idp`
+        // namespace and revokes the refresh token at the IdP. The browser harness
+        // has neither, and — critically — it must NOT stand in for the
+        // destructive `sign_out` below: specs assert the two are distinguishable
+        // via __BUZZ_E2E_COMMANDS__, which is the whole point of the button.
+        return {
+          hadCachedToken: true,
+          tokenCacheRemoved: true,
+          revocation: "revoked",
+          revocationStatus: 200,
+          detail: "revocation returned HTTP 200",
+        };
       case "sign_out":
         // Production wipes local state and restarts the app. In the browser
         // harness there is nothing to wipe; resolving is enough — specs

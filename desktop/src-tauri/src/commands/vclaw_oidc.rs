@@ -33,6 +33,9 @@ use buzz_agent_pkg::auth::{
 };
 
 use crate::app_state::AppState;
+use crate::commands::vclaw_sign_out::{
+    revoke_cached_refresh_token, VclawSignOutReport, VclawSignOutRequest, VclawTokenCacheKey,
+};
 
 /// Issuer of the vclaw IDP (Authelia v4.38.0). Discovery is RFC 8414, one
 /// document under the issuer.
@@ -48,7 +51,13 @@ const VCLAW_REDIRECT_HOST: &str = "127.0.0.1";
 const VCLAW_REDIRECT_PATH: &str = "/callback";
 /// Scopes the registered client must be granted. `groups` is what makes the
 /// IdP usable as an authorization source later.
-const VCLAW_SCOPES: [&str; 4] = ["openid", "profile", "email", "groups"];
+// `offline_access` is REQUIRED for the silent refresh: the IdP's own registration note says
+// "`offline_access` + the refresh_token grant are required for the engine's cached-token refresh;
+// without the scope every expiry re-prompts" (authelia configuration.yml, the buzz-desktop block).
+// It is registered for this client, so the omission was ours, not the IdP's. Adding it changes
+// `sha256(discovery_url|client_id|scopes)`, the token-cache key below, which signs the user out
+// once - intended, and free on a fresh build.
+const VCLAW_SCOPES: [&str; 5] = ["openid", "profile", "email", "groups", "offline_access"];
 /// Cache directory under the platform config dir, keyed by this client, so the
 /// vclaw session can never collide with a Databricks one.
 const VCLAW_CACHE_NAMESPACE: &str = "vclaw-idp";
@@ -64,6 +73,21 @@ const VCLAW_USERINFO_URL: &str = "https://auth.vclawhub.com/api/oidc/userinfo";
 /// Per-request bound for the userinfo call. The engine owns the token
 /// endpoint's timeouts; this one is ours.
 const VCLAW_USERINFO_TIMEOUT: Duration = Duration::from_secs(15);
+/// RFC 7009 token revocation endpoint, read off the IdP's own discovery document
+/// (MEASURED 2026-10-03):
+///
+/// ```text
+/// "revocation_endpoint": "https://auth.vclawhub.com/api/oidc/revocation"
+/// "revocation_endpoint_auth_methods_supported": [..., "none"]
+/// ```
+///
+/// The same document has NO `end_session_endpoint`. That absence is what made the
+/// earlier reading of this IdP — "there is no server-side session this client
+/// could end" — true about the Authelia browser session and WRONG about the
+/// refresh token: a token is revocable even when a session is not. With
+/// `offline_access` in `VCLAW_SCOPES`, that refresh token outlives any local
+/// wipe, so a sign-out that only clears the cache leaves a live credential.
+const VCLAW_REVOCATION_URL: &str = "https://auth.vclawhub.com/api/oidc/revocation";
 
 /// Opens the sign-in page in the system browser.
 ///
@@ -242,22 +266,78 @@ pub async fn vclaw_oidc_session(
     }
 }
 
-/// Sign out of the vclaw IDP.
+/// The engine's token-cache key for this app, as VALUES: the same four
+/// constants this module signs in with.
 ///
-/// The IdP advertises no `end_session_endpoint` (MEASURED 2026-09-20), so there
-/// is no server-side session this client could end: dropping the locally cached
-/// tokens is the whole client-side logout, and it is what the engine's
-/// `sign_out` does. Returns whether a cached token existed.
+/// Handed to `vclaw_sign_out` rather than re-declared there, so the cache this
+/// command reads and the cache the engine writes can only disagree if the engine
+/// changes the derivation SHAPE — and that disagreement is reported (see
+/// `vclaw_sign_out::RevocationOutcome::CacheUnreadable`), never assumed away.
+fn vclaw_token_cache_key() -> VclawTokenCacheKey<'static> {
+    VclawTokenCacheKey {
+        discovery_url: VCLAW_DISCOVERY_URL,
+        client_id: VCLAW_CLIENT_ID,
+        scopes: &VCLAW_SCOPES,
+        namespace: VCLAW_CACHE_NAMESPACE,
+    }
+}
+
+/// Sign out of the vclaw IDP: the NON-DESTRUCTIVE logout.
 ///
-/// Deliberately not implemented: the portal's `POST /api/logout`. It would end
-/// the Authelia *browser* session as an optional extra, needs a portal base URL
-/// the desktop does not have, and buys nothing a local wipe does not — the next
-/// sign-in simply prompts again.
+/// This is the command behind the `Sign out` button in Settings > Profile, and
+/// it is deliberately the small one. It touches nothing but the cached vclaw
+/// credential:
+///
+/// 1. Read the cached refresh token, BEFORE the wipe — step 2 deletes the file
+///    the value lives in, and the engine exposes no way to hand the token out.
+/// 2. Clear the local vclaw session through the engine's `sign_out`: the token
+///    file plus the cooldown/attempt sidecars under the `vclaw-idp` namespace,
+///    and the in-memory cell. The advisory lock file stays, because the engine
+///    never unlinks a lock another process may hold.
+/// 3. Revoke the refresh token at the IdP (RFC 7009) and report the verdict.
+///
+/// The identity key, the OS keyring, the relay session, the community config and
+/// every other local byte are OUT of scope: that separation is what makes this a
+/// logout rather than the destructive `sign_out` (wipe everything, relaunch into
+/// first-run setup) that still sits beside it in the same section.
+///
+/// The IdP advertises no `end_session_endpoint`, so the Authelia BROWSER session
+/// cannot be ended by this client at all — it is a cookie in whatever browser
+/// ran the sign-in. The Settings copy states that; this command must not imply
+/// otherwise.
+///
+/// Returns a report rather than a bool: "the cache was cleared" and "the IdP was
+/// told" are different facts, and only the second stops the credential outliving
+/// the wipe.
 #[tauri::command]
-pub async fn vclaw_oidc_sign_out(app: AppHandle) -> Result<bool, String> {
+pub async fn vclaw_oidc_sign_out(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<VclawSignOutReport, String> {
+    let cache = vclaw_token_cache_key();
+    let cached = crate::commands::vclaw_sign_out::read_cached_refresh_token(cache);
+
     let source = vclaw_source(app)?;
-    source
+    let had_cached_token = source
         .sign_out()
         .await
-        .map_err(|error| format!("could not clear the vclaw session: {error}"))
+        .map_err(|error| format!("could not clear the vclaw session: {error}"))?;
+
+    // Checked AFTER the wipe, at the path this module derives, so "signed out"
+    // is a filesystem fact rather than an assumption about the engine.
+    let token_cache_removed = crate::commands::vclaw_sign_out::cache_path(cache)
+        .ok()
+        .map(|path| !path.exists());
+
+    Ok(revoke_cached_refresh_token(
+        &state.http_client,
+        VclawSignOutRequest {
+            revocation_url: VCLAW_REVOCATION_URL,
+            client_id: VCLAW_CLIENT_ID,
+        },
+        cached,
+        had_cached_token,
+        token_cache_removed,
+    )
+    .await)
 }

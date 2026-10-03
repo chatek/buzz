@@ -8,13 +8,41 @@ const SAMPLE_NSEC =
 
 test("key import masks the key with a reveal toggle", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await installMockBridge(page, undefined, {
-    skipCommunitySeed: true,
-    skipOnboardingSeed: true,
-  });
+  // ── WHY THIS TEST BOOTS LOST MODE, AND NOT THE OLD "USE AN EXISTING KEY" CLICK ────────────────
+  // DIRECTIVE (operator, "one door", 2026-10-03): "VClaw sign-in is the DEFAULT and THE ONLY
+  // method". The gate is `VCLAW_SIGN_IN_ONLY = true` in
+  // src/features/onboarding/ui/MachineOnboardingFlow.tsx: it stops `identity-key-intro`,
+  // `identity-key-help`, `key-import` and `backup` from RENDERING, and `vclawSignInOnlyRefusesPage`
+  // (read at the initial-page normaliser AND at the `showPage` choke point) stops them being
+  // NAVIGATED to as a way to sign in. So the landing screen the old fixture rendered no longer
+  // carries the "Use an existing key" button this test used to click — measured: its count is 0.
+  // WHAT IS *NOT* WITHDRAWN: the import surface itself. The directive keeps `key-import` and
+  // `backup` reachable for an operator whose identity the app reports LOST ("that operator still
+  // has to recover a key that exists somewhere else"), and that boot opens DIRECTLY on the import
+  // page — no click, no card to walk. So the fixture below is the app's own recovery entry, and it
+  // is the way a human reaches this input in the shipped build.
+  // THE GATE IS ASSERTED ON THE WAY IN (see the three `toHaveCount(0)` assertions): the withdrawn
+  // buttons are asserted ABSENT, which is a stronger statement than the removed click ever made.
+  await installMockBridge(
+    page,
+    { identityLost: true },
+    { skipOnboardingSeed: true },
+  );
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
+  // The lost-mode boot IS the import page: asserted, not clicked through.
+  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Enter your private key" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Create a new identity key" }),
+  ).toHaveCount(0);
+  await expect(page.getByTestId("onboarding-page-key-intro")).toHaveCount(0);
+
   const input = page.getByTestId("nostr-import-nsec-input");
   await expect(input).toBeVisible();
   await waitForAnimations(page);

@@ -3,6 +3,7 @@ import { toast } from "sonner";
 
 import { NsecMaskedDisplay } from "@/features/onboarding/ui/NsecMaskedDisplay";
 import { getNsec, signOut } from "@/shared/api/tauriIdentity";
+import { vclawSignOut } from "@/shared/api/vclawOidc";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -16,31 +17,59 @@ import { Button } from "@/shared/ui/button";
 import { Checkbox } from "@/shared/ui/checkbox";
 import { Input } from "@/shared/ui/input";
 import { Spinner } from "@/shared/ui/spinner";
+import {
+  describeVclawSignOut,
+  isRevocationUnresolved,
+} from "../lib/vclawSignOutCopy";
 import { SettingsOptionGroup, SettingsOptionRow } from "./SettingsOptionGroup";
 
 /**
- * The exact phrase the user must type before the destructive sign-out button
+ * The exact phrase the user must type before the destructive delete button
  * unlocks. Kept lowercase; the comparison trims and lowercases input so a
  * stray capital or trailing space does not trip people up — the friction is
  * deliberate typing, not case sensitivity.
  */
 export const SIGNOUT_CONFIRM_PHRASE = "wipe all my data";
 
+/** Said after every sign-out, because it is what makes this button the safe one. */
+export const IDENTITY_UNTOUCHED_COPY =
+  "Your identity key and local data are untouched.";
+
 /**
- * Sign-out card + destructive confirmation flow.
+ * TWO actions, and they must never collapse into one again.
  *
- * Signing out wipes the identity key and all local data, so the confirm
- * dialog gates the delete button behind two explicit steps:
+ * ── WHAT WAS WRONG (operator question, 2026-10-03) ─────────────────────────────
+ * This section was titled "Sign out" and its only action was `Delete my data`:
+ * a destructive button, gated behind a typed "wipe all my data", that removes
+ * the identity key and all local state and relaunches into first-run setup. A
+ * user who merely wanted to log out had to destroy their identity, or stay
+ * signed in. The title promised a sign-out the section did not offer, and the
+ * only way to end a session was the one action nobody should have to take.
  *
- * 1. Confirm recovery — Settings offers a tested password-protected backup;
- *    the dialog also shows the raw nsec as a last-chance fallback, and the
- *    user checks a box confirming they can restore their identity.
- * 2. Typed confirmation — the user must type the exact phrase
- *    "wipe all my data".
+ * Now there are two:
  *
- * Only when both gates pass does "Delete my data" become clickable.
+ * 1. **Sign out** — non-destructive. Clears the cached vclaw session and asks the
+ *    IdP to revoke the refresh token it issued (RFC 7009). The identity key, the
+ *    keyring, the relay session and every local byte stay exactly where they are.
+ * 2. **Delete my data** — unchanged, and still the only destructive action here:
+ *    key + all local data + relaunch into first-run setup, behind two explicit
+ *    gates (a tested backup confirmation and the typed phrase).
+ *
+ * The order is deliberate: the safe action is the one the eye reaches first, and
+ * the destructive button keeps the confirmation flow it always had.
+ *
+ * One limitation is stated in the UI rather than papered over: the IdP
+ * advertises no `end_session_endpoint`, so signing out here does NOT close the
+ * browser session at auth.vclawhub.com. That cookie lives in whatever browser
+ * ran the sign-in, and it is how a different identity reached this app during
+ * the operator's walk — so the copy tells the user to sign out there on a shared
+ * machine.
  */
 export function SignOutSection() {
+  // ── Non-destructive: the vclaw session ──────────────────────────────────────
+  const [isVclawPending, setIsVclawPending] = React.useState(false);
+
+  // ── Destructive: the local wipe (unchanged flow) ────────────────────────────
   const [isOpen, setIsOpen] = React.useState(false);
   const [isPending, setIsPending] = React.useState(false);
 
@@ -96,6 +125,36 @@ export function SignOutSection() {
     }
   }
 
+  /**
+   * Sign out of vclaw: the small action.
+   *
+   * Nothing here reads, clears, or moves the identity key — the one command it
+   * crosses the boundary with is `vclaw_oidc_sign_out`, which owns the cached
+   * vclaw credential and nothing else. The verdict is reported honestly: a
+   * sign-out whose revocation was refused or never sent is a warning, not a
+   * success, because the refresh token is then still live.
+   */
+  async function handleVclawSignOut() {
+    setIsVclawPending(true);
+    try {
+      const report = await vclawSignOut();
+      const description = `${describeVclawSignOut(report)} ${IDENTITY_UNTOUCHED_COPY}`;
+      if (isRevocationUnresolved(report)) {
+        toast.warning("Signed out on this device — the IdP was not updated.", {
+          description,
+        });
+      } else {
+        toast.success("Signed out of vclaw.", { description });
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not sign out of vclaw.",
+      );
+    } finally {
+      setIsVclawPending(false);
+    }
+  }
+
   function handleSignOut() {
     setIsPending(true);
     // Keep the pending state if signOut() resolves before restart.
@@ -121,17 +180,60 @@ export function SignOutSection() {
   }
 
   return (
-    <div className="mt-12 pb-6" data-testid="settings-signout">
-      <SettingsOptionGroup title="Sign out">
+    <div className="mt-12 space-y-12 pb-6" data-testid="settings-signout">
+      <SettingsOptionGroup data-testid="signout-vclaw-group" title="Sign out">
         <SettingsOptionRow>
           <div className="min-w-0">
             <p
               className="text-sm font-normal text-muted-foreground/70"
               data-settings-subcopy
             >
-              Removes your identity key and all local app data from this device.
-              Before signing out, create and test a password-protected key
-              backup above — this cannot be undone.
+              Signs you out of vclaw on this device, and asks the IdP to revoke
+              the refresh token it issued. Your identity key and all local app
+              data stay where they are.
+            </p>
+          </div>
+          <Button
+            data-testid="signout-vclaw"
+            disabled={isVclawPending}
+            onClick={() => void handleVclawSignOut()}
+            type="button"
+          >
+            {isVclawPending ? (
+              <Spinner aria-label="Signing out" className="h-4 w-4 border-2" />
+            ) : null}
+            {isVclawPending ? "Signing out…" : "Sign out"}
+          </Button>
+        </SettingsOptionRow>
+        {/* The one part of a logout this app cannot do for the user: no
+            `end_session_endpoint` exists on this IdP, so the browser cookie
+            survives. Stated, not implied. */}
+        <div className="px-4 py-3" data-testid="signout-browser-session-note">
+          <p
+            className="text-xs font-normal text-muted-foreground/70"
+            data-settings-subcopy
+          >
+            This does not end the browser session at auth.vclawhub.com — the IdP
+            advertises no end-session endpoint, so that sign-in cookie stays in
+            whichever browser you used. On a shared or borrowed machine, sign
+            out there too.
+          </p>
+        </div>
+      </SettingsOptionGroup>
+
+      <SettingsOptionGroup
+        data-testid="signout-delete-group"
+        title="Delete my data"
+      >
+        <SettingsOptionRow>
+          <div className="min-w-0">
+            <p
+              className="text-sm font-normal text-muted-foreground/70"
+              data-settings-subcopy
+            >
+              Deletes your identity key and all local app data from this device,
+              then relaunches Buzz into first-run setup. Create and test a
+              password-protected key backup above first — this cannot be undone.
             </p>
           </div>
           <Button
@@ -159,7 +261,9 @@ export function SignOutSection() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Sign out and wipe all data?</AlertDialogTitle>
+            <AlertDialogTitle>
+              Delete your identity key and all data?
+            </AlertDialogTitle>
             <AlertDialogDescription>
               This will delete your identity key, all agent settings, and cached
               data from this device, then relaunch Buzz into first-run setup.

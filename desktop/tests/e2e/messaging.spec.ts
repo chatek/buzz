@@ -33,8 +33,15 @@ async function expectReplyEditReady(threadPanel: Locator, content: string) {
 
 async function expectThreadReplyUnobscured(row: Locator) {
   await expect
-    .poll(async () =>
-      row.evaluate((element) => {
+    .poll(async () => {
+      // The thread body re-pins itself to its floor on every render while the
+      // reader is at the bottom (`useAnchoredScroll`), so a row that was in
+      // view when it was sent scrolls out of the scrollport as soon as later
+      // replies arrive. Bring the row back into the scrollport before
+      // measuring: this asserts the composer does not cover the row, not where
+      // the thread happened to be scrolled.
+      await row.scrollIntoViewIfNeeded();
+      return row.evaluate((element) => {
         const threadBody = element.closest(
           '[data-testid="message-thread-body"]',
         ) as HTMLElement | null;
@@ -53,8 +60,8 @@ async function expectThreadReplyUnobscured(row: Locator) {
         return (
           rowRect.top >= bodyRect.top - 1 && rowRect.bottom <= visibleBottom + 1
         );
-      }),
-    )
+      });
+    })
     .toBe(true);
 }
 
@@ -3053,16 +3060,22 @@ test("opens a single-level thread panel with inline expansion", async ({
   await expect(nestedReplyFromBobRow).toBeVisible();
 
   await page.evaluate(
-    ({ content, parentEventId, pubkey }) => {
+    ({ content, createdAt, parentEventId, pubkey }) => {
       window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
         channelName: "general",
         content,
+        createdAt,
         parentEventId,
         pubkey,
       });
     },
     {
       content: nestedReplyFromAgent,
+      // Stamp the agent reply one second ahead of the mock clock: the facepile
+      // is ordered by reply recency, and every reply in this test lands inside
+      // the same second, which leaves the leading participant ambiguous. This
+      // keeps the agent reply unambiguously the most recent one.
+      createdAt: Math.floor(Date.now() / 1000) + 1,
       parentEventId: firstReplyId,
       pubkey: TEST_IDENTITIES.alice.pubkey,
     },
@@ -3118,29 +3131,50 @@ test("opens a single-level thread panel with inline expansion", async ({
     stackGeometry[1].width - 4,
     1,
   );
-  let foregroundAgentIndex = -1;
+  // The facepile is ordered by reply recency, and the two human repliers here
+  // land inside the same second, so the leading slot is arbitrary (measured
+  // before the agent reply was stamped: the agent avatar led the stack in 8 of
+  // 30 runs). Assert the cutout invariant for every stacked pair rather than
+  // one index: the mask cut away for the avatar in front is the squircle path
+  // when that avatar is an agent, and the circle path when it is a person.
   await expect
-    .poll(async () => {
-      foregroundAgentIndex = await stackedParticipants.evaluateAll(
+    .poll(() =>
+      stackedParticipants.evaluateAll(
         (participants) =>
-          participants.findIndex(
-            (participant, index) =>
-              index > 0 && participant.querySelector(".rounded-squircle"),
-          ),
-      );
-      return foregroundAgentIndex;
-    })
-    .toBeGreaterThan(0);
-  const maskBehindAgent = rootSummaryRow.getByTestId(
-    `message-thread-summary-stack-mask-${foregroundAgentIndex - 1}`,
+          participants.filter((participant) =>
+            participant.querySelector(".rounded-squircle"),
+          ).length,
+      ),
+    )
+    .toBe(1);
+  const stackFaces = await stackedParticipants.evaluateAll((participants) =>
+    participants.map((participant, index) => ({
+      index,
+      isAgent: Boolean(participant.querySelector(".rounded-squircle")),
+      maskBehindAvatar: Boolean(
+        participant.querySelector(
+          '[data-testid^="message-thread-summary-stack-mask-"]',
+        ),
+      ),
+    })),
   );
-  const stackMaskImage = await maskBehindAgent.evaluate(
-    (element) => getComputedStyle(element).maskImage,
+  expect(stackFaces.filter((face) => face.isAgent)).toHaveLength(1);
+  const maskedFaces = stackFaces.filter((face) => face.maskBehindAvatar);
+  // Only the last avatar of the stack renders no foreground cutout.
+  expect(maskedFaces.map((face) => face.index)).toEqual(
+    stackFaces.slice(0, -1).map((face) => face.index),
   );
-  expect(stackMaskImage).toContain("data:image/svg+xml");
-  expect(decodeURIComponent(stackMaskImage)).toContain(
-    'd="M .5 0 C .93 0 1 .07 1 .5',
-  );
+  for (const face of maskedFaces) {
+    const stackMaskImage = await rootSummaryRow
+      .getByTestId(`message-thread-summary-stack-mask-${face.index}`)
+      .evaluate((element) => getComputedStyle(element).maskImage);
+    expect(stackMaskImage).toContain("data:image/svg+xml");
+    expect(decodeURIComponent(stackMaskImage)).toContain(
+      stackFaces[face.index + 1].isAgent
+        ? 'd="M .5 0 C .93 0 1 .07 1 .5'
+        : 'd="M .5 0 A .5 .5 0 1 1 .5 1 A .5 .5 0 1 1 .5 0 Z"',
+    );
+  }
 
   await expectThreadReplyUnobscured(nestedReplyRow);
 

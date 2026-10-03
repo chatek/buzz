@@ -9,12 +9,18 @@ import {
 } from "@/shared/api/tauriIdentity";
 import type { IdentityStorage } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
-import { vclawLogin, vclawSession } from "@/shared/api/vclawOidc";
+import { vclawSession } from "@/shared/api/vclawOidc";
 import {
-  provisionVclawCommunity,
-  segmentDisplayName,
+  type ProvisionResult,
   VCLAW_RELAY_URL,
 } from "../vclawCommunityProvision";
+import {
+  describeVclawSignInFailure,
+  signInWithVclaw,
+  VclawSignInFailure,
+} from "../vclawSignIn";
+import type { OrgVerdict } from "../vclawOrg";
+import { VclawOrgField } from "./VclawOrgField";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
 import { BackupStep } from "./BackupStep";
 import { DefaultConfigStep } from "./DefaultConfigStep";
@@ -58,6 +64,56 @@ export type MachineOnboardingPage =
   | "setup"
   | "config";
 
+/**
+ * ── VCLAW SIGN-IN IS THE ONLY METHOD — the gate (operator directive 2026-10-03) ──────────────
+ * The operator, after walking the shipped 0.5.24 build and getting stuck: "hide other login methods
+ * until I say it's time to re-enable them", and "VClaw sign-in is the DEFAULT and THE ONLY method".
+ *
+ * WHAT IS HIDDEN: the upstream login methods and the key-material pages behind them —
+ * `identity-key-intro` (create a key), `key-import` (import a key), `identity-key-help` (the help
+ * surface attached to that key step) and `backup` (back up and confirm the device key).
+ *
+ * WHY: the upstream default made the human CREATE A PRIVATE KEY to sign in. The app's own log shows
+ * it — `buzz-desktop: generated and saved identity pubkey b08d563d…` — and the UI then asked the
+ * operator to walk that key as a step. The key is an implementation detail of the relay: the Rust
+ * layer already resolved it at boot (`app_state.rs` `generate_and_persist`). Signing in is the
+ * human's step. Handling a key is not.
+ *
+ * HIDDEN, NOT DELETED: every page and every button stays in source. ONE constant restores them all —
+ * `VCLAW_SIGN_IN_ONLY` — and the pages it hides are listed in `VCLAW_SIGN_IN_ONLY_HIDDEN_PAGES`.
+ * Set it false and the create-key, import-key, key-help and backup pages come back as they were.
+ *
+ * UNREACHABLE, NOT MERELY INVISIBLE: the constant is read in exactly ONE place,
+ * `vclawSignInOnlyRefusesPage`, and BOTH the initial-page normaliser and the `showPage` choke point
+ * call that helper. A card, a resumed page, a deep link or a future caller therefore cannot land on
+ * a hidden page. Not rendering them alone would not be a gate.
+ *
+ * IDENTITY LOST IS NOT A LOGIN METHOD: when the app itself reports the identity lost (keyring
+ * cleared, and no key backup to fall back on), `key-import` and `backup` stay reachable — that
+ * operator still has to recover a key that exists somewhere else, and refusing them would strand
+ * them. The gate refuses those pages only as ways to SIGN IN.
+ */
+const VCLAW_SIGN_IN_ONLY = true;
+const VCLAW_SIGN_IN_ONLY_HIDDEN_PAGES: ReadonlySet<MachineOnboardingPage> =
+  new Set([
+    "identity-key-intro",
+    "identity-key-help",
+    "key-import",
+    "backup",
+  ] as const);
+const VCLAW_SIGN_IN_ONLY_RECOVERY_PAGES: ReadonlySet<MachineOnboardingPage> =
+  new Set(["key-import", "backup"] as const);
+
+/** The gate, in one place. `true` means this page must not be shown. */
+function vclawSignInOnlyRefusesPage(
+  page: MachineOnboardingPage,
+  identityLost: boolean,
+) {
+  if (!VCLAW_SIGN_IN_ONLY) return false;
+  if (!VCLAW_SIGN_IN_ONLY_HIDDEN_PAGES.has(page)) return false;
+  return !(identityLost && VCLAW_SIGN_IN_ONLY_RECOVERY_PAGES.has(page));
+}
+
 type BackupSubview = "created" | "password";
 
 export function MachineOnboardingFlow({
@@ -78,9 +134,14 @@ export function MachineOnboardingFlow({
   initialPage?: MachineOnboardingPage;
   queryClient: QueryClient;
 }) {
-  const [page, setPage] = React.useState<MachineOnboardingPage>(
-    identityLost ? "key-import" : (initialPage ?? "identity"),
-  );
+  const [page, setPage] = React.useState<MachineOnboardingPage>(() => {
+    const firstPage = identityLost ? "key-import" : (initialPage ?? "identity");
+    // A resumed page (`initialPage`) must not open a page the gate refuses. This is one half of the
+    // gate; the other half is in showPage, and both read the one helper above.
+    return vclawSignInOnlyRefusesPage(firstPage, identityLost)
+      ? "identity"
+      : firstPage;
+  });
   const [transitionDirection, setTransitionDirection] =
     React.useState<OnboardingTransitionDirection>("forward");
   const [error, setError] = React.useState<string | null>(null);
@@ -99,9 +160,19 @@ export function MachineOnboardingFlow({
   } | null>(null);
   // What the segment -> community provisioning actually did, so the identity step
   // can REPORT it rather than assert it.
-  const [vclawProvision, setVclawProvision] = React.useState<
-    ReturnType<typeof provisionVclawCommunity> | null
-  >(null);
+  const [vclawProvision, setVclawProvision] =
+    React.useState<ProvisionResult | null>(null);
+  // THE ESTATE'S ANSWER TO THE ORG — shown, not summarised. `null` before a sign-in and after a
+  // STOP, because a miss grants nothing to show. It is also what the link records, so the answer
+  // outlives this screen (see vclawSignIn.ts).
+  const [vclawOrg, setVclawOrg] = React.useState<OrgVerdict | null>(null);
+  // Set once the org is granted and the key is ready, so the app is entered AFTER the verdict has
+  // been committed (see the effect below).
+  const [vclawSettled, setVclawSettled] = React.useState<{
+    pubkey: string;
+    identity: Awaited<ReturnType<typeof getIdentity>>;
+  } | null>(null);
+  const completedSignInRef = React.useRef(false);
   // Probe for an EXISTING vclaw session on mount, headlessly. Two purposes: it
   // proves the non-interactive path (`vclaw_oidc_session`) as well as the
   // interactive one, and it tells the operator whether a token is already
@@ -181,10 +252,91 @@ export function MachineOnboardingFlow({
       ),
     [],
   );
+  // THE choke point of the sign-in-only gate: every navigation below routes through here, so
+  // refusing a hidden page once covers every card, resumed page, deep link and future caller.
+  const showPage = React.useCallback(
+    (
+      next: MachineOnboardingPage,
+      direction?: OnboardingTransitionDirection,
+    ) => {
+      if (vclawSignInOnlyRefusesPage(next, identityLost)) return;
+      if (direction) setTransitionDirection(direction);
+      setPage(next);
+    },
+    [identityLost],
+  );
+
+  // THE SIGN-IN — the only way forward while the gate is on. One sequence, shared with the
+  // community-setup screen through `vclawSignIn.ts`: the IdP, then THE ESTATE'S ANSWER TO THE ORG
+  // the human entered (a miss stops there, before the community is provisioned), then the device key
+  // the Rust layer ALREADY holds (the log line "generated and saved identity pubkey" is that key
+  // being made at boot, never by this handler), then the estate community, then the subject recorded
+  // beside the key. NO key page is shown, and the human never creates, imports, backs up or
+  // confirms a key.
+  const signInWithVclawAndContinue = React.useCallback(async (org: string) => {
+    setIsVclawPending(true);
+    setVclawResult(null);
+    setVclawOrg(null);
+    setVclawSettled(null);
+    completedSignInRef.current = false;
+    setError(null);
+    try {
+      const {
+        account,
+        identity,
+        provision,
+        link,
+        org: grantedOrg,
+      } = await signInWithVclaw(org);
+      setVclawAccount({ subject: account.subject, email: account.email });
+      setVclawProvision(provision);
+      setVclawOrg(grantedOrg);
+      setVclawResult(
+        `Signed in to vclaw as ${account.subject}` +
+          (account.email ? ` (${account.email})` : "") +
+          (link
+            ? " — the subject is linked to this device's key."
+            : " — the subject could NOT be linked to this device's key."),
+      );
+      // NOTHING ADVANCES YET: the state above is what the estate answered, and the effect below
+      // enters the app once that answer has been committed.
+      setIsVclawPending(false);
+      setVclawSettled({ pubkey: identity.pubkey, identity });
+    } catch (cause) {
+      // THE STOP IS REPORTED WHERE THE FIELD IS, AND IT NAMES THE RIGHT LAYER: an org the estate
+      // does not grant is not an IdP error, and saying "vclaw IdP" here would send the reader to the
+      // issuer when the CLAIM was what said no. Nothing was provisioned and no key was touched, so
+      // the app stays exactly where it was — signed out of the estate.
+      const stopped = cause instanceof VclawSignInFailure ? cause : null;
+      setVclawOrg(stopped?.verdict ?? null);
+      // An ORG refusal IS the estate's answer, so it renders as the verdict and is NOT repeated as a
+      // second sentence: the same reason stated twice reads as two problems.
+      setVclawResult(
+        stopped?.stage === "org" ? null : describeVclawSignInFailure(cause),
+      );
+      setIsVclawPending(false);
+    }
+  }, []);
+
+  // THE ESTATE'S ANSWER IS COMMITTED BEFORE THE APP MOUNTS. `complete()` unmounts this flow, so
+  // calling it in the same update as the verdict would commit neither — the org the estate granted
+  // would never be rendered anywhere, and the requirement is that the authoritative answer is SHOWN.
+  // The verdict is committed first (that is what `vclawSettled` waits on), then this hands the device
+  // key on, exactly as the one-step version did.
+  React.useEffect(() => {
+    if (!vclawSettled || completedSignInRef.current) return;
+    completedSignInRef.current = true;
+    setSelectedPubkey(vclawSettled.pubkey);
+    setIdentityStorage(vclawSettled.identity.storage);
+    queryClient.setQueryData(["identity"], vclawSettled.identity);
+    // STRAIGHT INTO THE APP, with no key step to walk: the key already exists, and it was never the
+    // human's to handle.
+    complete(vclawSettled.pubkey, { continueToProfile: true });
+  }, [vclawSettled, complete, queryClient]);
+
   const returnToApiConfig = React.useCallback(() => {
     setIsChoosingDifferentHarness(false);
-    setTransitionDirection("backward");
-    setPage("config");
+    showPage("config", "backward");
   }, []);
 
   const loadFreshIdentity = React.useCallback(async () => {
@@ -196,10 +348,9 @@ export function MachineOnboardingFlow({
       setSelectedPubkey(identity.pubkey);
       setIdentityStorage(identity.storage);
       setBackupDirection("forward");
-      setTransitionDirection("forward");
       setReturningFromSecurity(false);
       setBackupSubview("created");
-      setPage("backup");
+      showPage("backup", "forward");
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Failed to load identity",
@@ -219,8 +370,7 @@ export function MachineOnboardingFlow({
       setIdentityWasImported(true);
       setSelectedPubkey(identity.pubkey);
       setIdentityStorage(identity.storage);
-      setTransitionDirection("forward");
-      setPage("setup");
+      showPage("setup", "forward");
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Failed to load identity",
@@ -244,10 +394,9 @@ export function MachineOnboardingFlow({
       setSelectedPubkey(identity.pubkey);
       setIdentityStorage(identity.storage);
       setBackupDirection("forward");
-      setTransitionDirection("forward");
       setReturningFromSecurity(false);
       setBackupSubview("created");
-      setPage("backup");
+      showPage("backup", "forward");
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Failed to save identity",
@@ -264,8 +413,7 @@ export function MachineOnboardingFlow({
       queryClient.setQueryData(["identity"], identity);
       setIdentityWasImported(true);
       setSelectedPubkey(identity.pubkey);
-      setTransitionDirection("forward");
-      setPage("setup");
+      showPage("setup", "forward");
     },
     [continueWithIdentity, queryClient],
   );
@@ -281,8 +429,7 @@ export function MachineOnboardingFlow({
       setPhoneRecoveryStep("loading");
       return;
     }
-    setTransitionDirection("backward");
-    setPage("identity");
+    showPage("identity", "backward");
   }, [keyImportDialog, keyImportStage]);
 
   const returnToCreatedKey = React.useCallback(() => {
@@ -302,35 +449,31 @@ export function MachineOnboardingFlow({
     if (identityWasImported) {
       setKeyImportFormKey((current) => current + 1);
       setKeyImportStage("key-entry");
-      setTransitionDirection("backward");
-      setPage("key-import");
+      showPage("key-import", "backward");
       return;
     }
     if (backupSubview === "password") {
       backupSessionToPasswordEntry(backupSession);
     }
     setBackupDirection("backward");
-    setTransitionDirection("backward");
     setReturningFromSecurity(false);
-    setPage("backup");
+    showPage("backup", "backward");
   }, [backupSession, backupSubview, identityWasImported]);
 
   const backFromConfig = React.useCallback(() => {
     setupSelectionHandoffRef.current = false;
-    setTransitionDirection("backward");
     setIsChoosingDifferentHarness(false);
     if (configBackTarget === "method") {
       setHarnessConnectionMethod(null);
     }
-    setPage("setup");
+    showPage("setup", "backward");
   }, [configBackTarget]);
 
   const chromeBackAction =
     page === "identity-key-help"
       ? {
           onClick: () => {
-            setTransitionDirection("backward");
-            setPage(identityKeyHelpReturnPage);
+            showPage(identityKeyHelpReturnPage, "backward");
           },
         }
       : page === "identity-key-intro"
@@ -338,8 +481,7 @@ export function MachineOnboardingFlow({
             disabled: isPending,
             onClick: () => {
               setError(null);
-              setTransitionDirection("backward");
-              setPage("identity");
+              showPage("identity", "backward");
             },
           }
         : page === "key-import" &&
@@ -356,8 +498,7 @@ export function MachineOnboardingFlow({
             : page === "backup"
               ? {
                   onClick: () => {
-                    setTransitionDirection("backward");
-                    setPage("identity-key-intro");
+                    showPage("identity-key-intro", "backward");
                   },
                 }
               : page === "setup"
@@ -397,147 +538,148 @@ export function MachineOnboardingFlow({
                 <p className="mt-4 text-sm text-destructive">{error}</p>
               ) : null}
               <div className="mt-10 flex flex-col items-center gap-3">
-                <Button
-                  className={ONBOARDING_LANDING_CTA_CLASS}
-                  disabled={isPending}
-                  onClick={() => {
-                    if (selectedPubkey) {
-                      void loadFreshIdentity();
-                      return;
-                    }
-                    setTransitionDirection("forward");
-                    setPage("identity-key-intro");
-                  }}
-                  type="button"
-                >
-                  {isPending
-                    ? "Loading identity…"
-                    : selectedPubkey
-                      ? "Continue setup"
-                      : "Create a new identity key"}
-                </Button>
-                <Button
-                  className={`${ONBOARDING_SECONDARY_CTA_CLASS} px-5`}
-                  disabled={isPending}
-                  onClick={() => {
-                    setKeyImportDialog(null);
-                    setKeyImportStage("key-entry");
-                    setTransitionDirection("forward");
-                    setPage("key-import");
-                  }}
-                  type="button"
-                  variant="ghost"
-                >
-                  {selectedPubkey
-                    ? "Use a different key instead"
-                    : "Use an existing key"}
-                </Button>
                 {/*
-                  vclaw IdP login.
+                  THE SIGN-IN — the vclaw build's PRIMARY action, FIRST in DOM order, and (with the
+                  gate on) the ONLY forward control on this screen. It completes by itself: the IdP,
+                  then the device key the Rust layer already holds, then the estate community, then
+                  the link. The community-setup screen offers the same action from the same module
+                  (`vclawSignIn.ts`), so the sequence exists once rather than twice.
 
-                  WHY THIS BUTTON EXISTS: the `vclaw_oidc_login` command was
-                  implemented and compiled into the app but had ZERO call sites
-                  in the front-end, so the IdP could not be exercised from the
-                  UI at all (measured 2026-09-29). This is the missing entry
-                  point — it proves the issuer, client, redirect and scopes the
-                  Rust layer carries are reachable, and it reports what the IdP
-                  returned rather than asserting success.
+                  HISTORY, KEPT: `vclaw_oidc_login` was implemented and compiled into the app but
+                  had ZERO call sites in the front-end, so the IdP could not be exercised from the UI
+                  at all (measured 2026-09-29). This entry point is what exercises the issuer, client,
+                  redirect and scopes the Rust layer carries — and now it is the only way forward.
+                  A vclaw SEGMENT IS A BUZZ COMMUNITY, so the provisioning happens here from the
+                  groups the IdP returns, against the estate's own relay: the operator never sees a
+                  community picker, and nothing is offered by the vendor's hosted cloud.
                 */}
-                <Button
-                  className={`${ONBOARDING_SECONDARY_CTA_CLASS} px-5`}
-                  disabled={isPending || isVclawPending}
-                  onClick={() => {
-                    setIsVclawPending(true);
-                    setVclawResult(null);
-                    void vclawLogin()
-                      .then((account) => {
-                        // SUCCESS IS NOT A DEAD END. Until this change the button
-                        // reported the login and left the operator exactly where they
-                        // were, which reads as a failure — and was one. Record the
-                        // subject, then CONTINUE to the key step, because the app still
-                        // needs a key of its own.
-                        setVclawAccount({
-                          subject: account.subject,
-                          email: account.email,
-                        });
-                        setVclawResult(
-                          `Signed in to vclaw as ${account.subject}` +
-                            (account.email ? ` (${account.email})` : "") +
-                            (account.groups.length
-                              ? ` — segments: ${account.groups.join(", ")}`
-                              : "") +
-                            ". Now create or import this device's key; the two are linked.",
-                        );
-                        // A vclaw SEGMENT IS A BUZZ COMMUNITY. Provision them here,
-                        // from the groups the IdP just returned, against the estate's
-                        // own relay - so the operator never sees a community picker
-                        // and nothing is offered by the vendor's hosted cloud.
-                        setVclawProvision(provisionVclawCommunity(account.groups));
-                        setTransitionDirection("forward");
-                        setPage("identity-key-intro");
-                      })
-                      .catch((err: unknown) => {
-                        setVclawResult(
-                          `vclaw IdP: ${err instanceof Error ? err.message : String(err)}`,
-                        );
-                      })
-                      .finally(() => setIsVclawPending(false));
-                  }}
-                  type="button"
-                  variant="ghost"
+                <VclawOrgField
+                  onSignIn={(org) => void signInWithVclawAndContinue(org)}
+                  pending={isVclawPending}
                 >
-                  {isVclawPending ? "Opening vclaw login…" : "Login with VClaw"}
-                </Button>
-                {vclawResult ? (
-                  <p className="mt-2 max-w-md break-words text-center text-xs text-muted-foreground">
-                    {vclawResult}
-                  </p>
-                ) : null}
-                {/* THE LINK, MADE VISIBLE. B: this device keeps its OWN Nostr key and
-                    the vclaw subject is recorded beside it. Shown, not merged, so the
-                    operator can see which identity the key will belong to. */}
-                {vclawAccount ? (
-                  <p
-                    className="mt-2 max-w-md break-words text-center text-xs text-muted-foreground"
-                    data-testid="vclaw-linked-subject"
-                  >
-                    Linked vclaw identity: {vclawAccount.subject}
-                    {vclawAccount.email ? ` (${vclawAccount.email})` : ""} — this device
-                    keeps its own key; the two are recorded together, not derived from
-                    one another.
-                  </p>
-                ) : null}
-                {/* ONE COMMUNITY, AND THE SPACES THE IDENTITY MAY ENTER. Segments are NOT
-                    communities: the app is single-community and a switch reconnects the relay and
-                    re-keys the whole tree. This reports the outcome rather than asserting it. */}
-                {vclawProvision ? (
-                  <p
-                    className="mt-1 max-w-md break-words text-center text-xs text-muted-foreground"
-                    data-testid="vclaw-provisioned-community"
-                  >
-                    {vclawProvision.error
-                      ? `Community: ${vclawProvision.error}.`
-                      : `Community ${VCLAW_RELAY_URL} ` +
-                        (vclawProvision.added
-                          ? "added."
-                          : vclawProvision.existing
-                            ? "already present."
-                            : "not added.") +
-                        (vclawProvision.segments.length
-                          ? ` Spaces in this identity: ${vclawProvision.segments
-                              .map(segmentDisplayName)
-                              .join(", ")}.`
-                          : " No tenant segment in this identity, so no space is listed.")}
-                  </p>
-                ) : null}
+                  {/* THE ESTATE'S ANSWER TO THE ORG — ONE org, the group the estate itself names,
+                      and BOTH whenever the answer is not textually what was entered. NOT a list of
+                      the identity's other segments: `data-testid="vclaw-org-verdict"` is the only
+                      place any segment name is rendered on this screen. */}
+                  {/* THE ESTATE'S ANSWER TO THE ORG — ONE org, the group the estate itself names,
+                      and BOTH whenever the answer is not textually what was entered. NOT a list of
+                      the identity's other segments: `data-testid="vclaw-org-verdict"` is the only
+                      place any org name is rendered on this screen, and a STOP is rendered here
+                      too, so the reason is stated ONCE. */}
+                  {vclawOrg ? (
+                    <p
+                      className={
+                        vclawOrg.status === "not-granted"
+                          ? "break-words text-xs leading-5 text-destructive"
+                          : "break-words text-xs leading-5 text-muted-foreground"
+                      }
+                      data-status={vclawOrg.status}
+                      data-testid="vclaw-org-verdict"
+                    >
+                      {vclawOrg.message}
+                    </p>
+                  ) : null}
+                  {vclawResult ? (
+                    <p className="break-words text-xs leading-5 text-muted-foreground">
+                      {vclawResult}
+                    </p>
+                  ) : null}
+                  {/* THE LINK, MADE VISIBLE. Design B: this device keeps its OWN Nostr key and the
+                      vclaw subject is recorded beside it. Shown, not merged, so the operator can see
+                      which identity the key will belong to. */}
+                  {vclawAccount ? (
+                    <p
+                      className="break-words text-xs leading-5 text-muted-foreground"
+                      data-testid="vclaw-linked-subject"
+                    >
+                      Linked vclaw identity: {vclawAccount.subject}
+                      {vclawAccount.email ? ` (${vclawAccount.email})` : ""} —
+                      this device keeps its own key; the two are recorded
+                      together, not derived from one another.
+                    </p>
+                  ) : null}
+                  {/* ONE COMMUNITY. Segments are NOT communities: the app is single-community and a
+                      switch reconnects the relay and re-keys the whole tree. This reports the outcome
+                      rather than asserting it. The identity's OTHER tenant groups are deliberately
+                      NOT listed here: the org the estate granted is shown above, alone. */}
+                  {vclawProvision ? (
+                    <p
+                      className="break-words text-xs leading-5 text-muted-foreground"
+                      data-testid="vclaw-provisioned-community"
+                    >
+                      {vclawProvision.error
+                        ? `Community: ${vclawProvision.error}.`
+                        : `Community ${VCLAW_RELAY_URL} ` +
+                          (vclawProvision.added
+                            ? "added."
+                            : vclawProvision.existing
+                              ? "already present."
+                              : "not added.")}
+                    </p>
+                  ) : null}
+                </VclawOrgField>
+                {/* VCLAW-SIGN-IN-ONLY HIDDEN — the upstream login methods, and the ONE marker for
+                    them in this file.
+                    WHAT: "Create a new identity key" / "Continue setup" (primary → identity-key-intro)
+                    and "Use an existing key" / "Use a different key instead" (ghost → key-import).
+                    WHY: operator directive 2026-10-03 — "VClaw sign-in is the DEFAULT and THE ONLY
+                    method". These two ARE the upstream defaults, and the first one is the step the
+                    operator was made to walk: it asks a human to create, then handle, a private key.
+                    UNREACHABLE, NOT MERELY INVISIBLE: not rendered here, AND refused by the gate
+                    (VCLAW_SIGN_IN_ONLY, read in `vclawSignInOnlyRefusesPage`) at the initial-page
+                    normaliser and at `showPage`, so no card, resumed page, deep link or future
+                    caller can land on either page.
+                    RESTORE: set `VCLAW_SIGN_IN_ONLY` false at the top of this file; both buttons and
+                    every page they open are intact in source. */}
+                {VCLAW_SIGN_IN_ONLY ? null : (
+                  <>
+                    <Button
+                      className={ONBOARDING_LANDING_CTA_CLASS}
+                      disabled={isPending}
+                      onClick={() => {
+                        if (selectedPubkey) {
+                          void loadFreshIdentity();
+                          return;
+                        }
+                        showPage("identity-key-intro", "forward");
+                      }}
+                      type="button"
+                    >
+                      {isPending
+                        ? "Loading identity…"
+                        : selectedPubkey
+                          ? "Continue setup"
+                          : "Create a new identity key"}
+                    </Button>
+                    <Button
+                      className={`${ONBOARDING_SECONDARY_CTA_CLASS} px-5`}
+                      disabled={isPending}
+                      onClick={() => {
+                        setKeyImportDialog(null);
+                        setKeyImportStage("key-entry");
+                        showPage("key-import", "forward");
+                      }}
+                      type="button"
+                      variant="ghost"
+                    >
+                      {selectedPubkey
+                        ? "Use a different key instead"
+                        : "Use an existing key"}
+                    </Button>
+                  </>
+                )}
               </div>
-              <IdentityKeyHelpDialog
-                onOpen={() => {
-                  setIdentityKeyHelpReturnPage("identity");
-                  setTransitionDirection("forward");
-                  setPage("identity-key-help");
-                }}
-              />
+              {/* Gated with the sign-in-only gate above: the key-help surface belongs to the
+                  create-a-key step, which is hidden, so nothing may open it. Same constant, one
+                  more read of the same helper — no second switch. */}
+              {VCLAW_SIGN_IN_ONLY ? null : (
+                <IdentityKeyHelpDialog
+                  onOpen={() => {
+                    setIdentityKeyHelpReturnPage("identity");
+                    showPage("identity-key-help", "forward");
+                  }}
+                />
+              )}
             </OnboardingSlideTransition>
           </div>
         </OnboardingFooterProvider>
@@ -561,8 +703,7 @@ export function MachineOnboardingFlow({
           onOpenHelp={() => {
             setError(null);
             setIdentityKeyHelpReturnPage("identity-key-intro");
-            setTransitionDirection("forward");
-            setPage("identity-key-help");
+            showPage("identity-key-help", "forward");
           }}
         />
       ) : page === "identity-key-help" ? (
@@ -716,8 +857,7 @@ export function MachineOnboardingFlow({
             direction={backupDirection}
             identityStorage={identityStorage}
             onNext={() => {
-              setTransitionDirection("forward");
-              setPage("setup");
+              showPage("setup", "forward");
             }}
             onOpenPasswordBackup={() => {
               resetEncryptedBackupSession(backupSession);
@@ -751,8 +891,7 @@ export function MachineOnboardingFlow({
               }
               setConfigBackTarget(nextConfigBackTarget);
               setIsChoosingDifferentHarness(false);
-              setTransitionDirection("forward");
-              setPage("config");
+              showPage("config", "forward");
             },
           }}
           direction={transitionDirection}
@@ -780,8 +919,7 @@ export function MachineOnboardingFlow({
               harnessConnectionMethod === "api"
                 ? () => {
                     setIsChoosingDifferentHarness(true);
-                    setTransitionDirection("forward");
-                    setPage("setup");
+                    showPage("setup", "forward");
                   }
                 : undefined,
           }}

@@ -23,7 +23,7 @@ test.describe("signout screenshots", () => {
     });
   });
 
-  test("signout-section — data deletion card in Settings › Profile", async ({
+  test("signout-section — sign-out and data-deletion cards in Settings › Profile", async ({
     page,
   }) => {
     await installMockBridge(page);
@@ -60,7 +60,12 @@ test.describe("signout screenshots", () => {
 
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toBeVisible({ timeout: 5_000 });
-    await expect(dialog.getByText("Sign out and wipe all data?")).toBeVisible();
+    // Named for the DESTRUCTIVE action: "Sign out and wipe all data?" described
+    // a sign-out this dialog does not perform (the non-destructive Sign out is
+    // the other card, and does not open a dialog at all).
+    await expect(
+      dialog.getByText("Delete your identity key and all data?"),
+    ).toBeVisible();
     await expect(
       dialog.getByRole("button", { name: "Delete my data" }),
     ).toBeVisible();

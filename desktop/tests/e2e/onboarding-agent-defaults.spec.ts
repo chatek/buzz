@@ -1,6 +1,5 @@
 import { expect, test } from "@playwright/test";
 import { installMockBridge } from "../helpers/bridge";
-import { passThroughBackupStep } from "../helpers/onboarding";
 
 function runtime(
   id: "buzz-agent" | "claude" | "codex" | "goose",
@@ -35,13 +34,60 @@ function runtime(
   };
 }
 
+/**
+ * ── THE ROUTE TO THE HARNESS-SETUP STEP, THROUGH THE ONE DOOR THIS BUILD HAS ───────────────────
+ * DIRECTIVE (operator, "one door", 2026-10-03 — the W2 login-overhaul checks,
+ *   `.prime/handoff/agents-sprint/e2e/W2-LOGIN-OVERHAUL-CHECKS.md`): VClaw sign-in is the DEFAULT
+ *   and THE ONLY method, and the picker/key/vendor paths must be unreachable — not merely
+ *   unrendered — behind ONE named flip constant per surface.
+ * GATES (compile-time constants, so the hidden branches are folded out of the bundle the tests are
+ *   served — measured: neither `community-choice-join` nor `Join or create a community` occurs in
+ *   any file under `dist/`):
+ *   • `VCLAW_SIGN_IN_ONLY = true` — `src/features/onboarding/ui/MachineOnboardingFlow.tsx` — refuses
+ *     `identity-key-intro`, `key-import`, `identity-key-help` and `backup` at BOTH the initial-page
+ *     normaliser and the `showPage` choke point. The chain this helper used to walk
+ *     ("Create a new identity key" → "Create my private key" → backup) is gone, and no card, deep
+ *     link or future caller can land on those pages either.
+ *   • `VCLAW_SPRINT_1_PICKER_HIDDEN = true` — `src/features/communities/ui/WelcomeSetup.tsx` — hides
+ *     the community picker and selects the SPRINT-1 copy: the welcome heading is
+ *     "Sign in to join the estate community" and the screen's ONE forward action is the estate
+ *     sign-in (`welcome-vclaw-sign-in`).
+ * WHAT REPLACED IT: while the sign-in gate is on, the first-run landing's only forward control is
+ *   the estate sign-in (`vclaw-org-sign-in`), and it COMPLETES the machine onboarding and mounts the
+ *   app — so there is no first-run route to `onboarding-page-2` at all. The setup step survives
+ *   behind the app's OWN re-entry, which is the route this helper walks while the fixture keeps the
+ *   app in the state the 26 tests declare — an identity that already finished onboarding and has NO
+ *   community (`{ skipCommunitySeed: true }`, and deliberately NOT `skipOnboardingSeed`), so
+ *   `needsSetup` is true:
+ *     1. the gated community screen renders — ASSERTED here, not merely awaited: the heading by role
+ *        and EXACT name, the withdrawn picker copy and card ABSENT, the sign-in CTA present/usable;
+ *     2. its Back action is the machine flow's re-entry — `welcome-setup-back` opens the machine
+ *        config step (`reopenMachineConfig` → `initialPage: "config"`, which the sign-in gate allows);
+ *     3. the config step's Back walks one step back — `showPage("setup", "backward")` — to the
+ *        harness-setup step, which the sign-in gate also allows.
+ *   Nothing was weakened: the picker is asserted ABSENT (`toHaveCount(0)`, which a CSS hide cannot
+ *   satisfy) and its replacement is asserted PRESENT AND USABLE.
+ * WHEN THE GATES OPEN: restore the three clicks this helper used to make (create → create →
+ *   `passThroughBackupStep`) and put `skipOnboardingSeed: true` back into the 26 fixtures; the
+ *   tests' own assertions are unchanged apart from the six picker re-points, which carry their own
+ *   note.
+ */
 async function navigateToSetupPage(
   page: Parameters<typeof installMockBridge>[0],
   method: "subscription" | "api" | null = "subscription",
 ) {
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
-  await page.getByRole("button", { name: "Create my private key" }).click();
-  await passThroughBackupStep(page);
+  await expect(
+    page.getByRole("heading", {
+      name: "Sign in to join the estate community",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("community-choice-join")).toHaveCount(0);
+  await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
+  await page.getByTestId("welcome-setup-back").click();
+  await expect(page.getByTestId("onboarding-page-config")).toBeVisible();
+  await page.getByTestId("onboarding-back").click();
   await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
   if (method) {
     await page.getByTestId(`onboarding-harness-method-${method}`).click();
@@ -106,7 +152,7 @@ test("setup filters the bundled harnesses by connection method", async ({
         runtime("claude", "available", { status: "logged_in" }),
       ],
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page, null);
@@ -255,7 +301,7 @@ test("API selection opens Buzz config immediately while discovery is pending", a
       ],
       acpRuntimesDelayMs: 3_000,
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page, null);
@@ -289,7 +335,7 @@ test("choosing signed-out Buzz skips the generic harness auth step", async ({
         runtime("goose", "available", { status: "not_applicable" }),
       ],
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page, "api");
@@ -327,7 +373,7 @@ test("setup distinguishes a missing CLI from an installed desktop app", async ({
         ),
       ],
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -386,7 +432,7 @@ test("setup explains when an installed ACP adapter needs updating", async ({
         runtime("codex", "adapter_outdated", { status: "unknown" }),
       ],
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -408,7 +454,7 @@ test("a ready harness opens its provider settings without an intermediate page",
         runtime("codex", "available", { status: "logged_out" }),
       ],
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -446,7 +492,7 @@ test("setup shows runtime discovery loading before rendering harnesses", async (
       ],
       acpRuntimesDelayMs: 3_000,
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -464,8 +510,12 @@ test("unknown authentication can be checked again", async ({ page }) => {
   const loggedIn = runtime("claude", "available", { status: "logged_in" });
   await installMockBridge(
     page,
-    { acpRuntimesCatalogSequence: [[unknown], [loggedIn]] },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    // The route passes THROUGH the config step (see `navigateToSetupPage`), and that step
+    // performs its OWN catalog discovery before the setup step's. So the sequence is: read 1 = the
+    // pass-through, read 2 = the setup step's first view ("unknown" → the Check-again control),
+    // read 3 = the re-check after the click. The assertions below are unchanged.
+    { acpRuntimesCatalogSequence: [[unknown], [unknown], [loggedIn]] },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -492,7 +542,7 @@ test("auth discovery failure stays actionable without exposing internals", async
       ],
       acpAuthMethodsError: "sensitive auth discovery details",
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -535,7 +585,7 @@ test("terminal launch failure keeps Sign in available", async ({ page }) => {
       },
       connectAcpRuntimeError: "sensitive launch details",
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -577,7 +627,7 @@ test("sign in stays pending until catalog detection confirms Ready", async ({
         },
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -619,7 +669,7 @@ test("defaults waits for baked configuration before rendering fields", async ({
       ],
       bakedBuildEnvDelayMs: 500,
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -647,7 +697,7 @@ test("defaults renders only fields supported by the selected harness", async ({
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -685,7 +735,7 @@ test("defaults hides model when optional harness has empty discovery", async ({
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -718,7 +768,7 @@ test("defaults keeps model control when optional harness discovery fails", async
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -752,7 +802,7 @@ test("defaults can be skipped while loading without persisting configuration", a
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -761,7 +811,17 @@ test("defaults can be skipped while loading without persisting configuration", a
   await expect(page.getByText("Loading…")).toBeVisible();
   await page.getByTestId("onboarding-config-skip").click();
 
-  await expect(page.getByText("Join or create a community")).toBeVisible();
+  // The picker is GATED (see `navigateToSetupPage`): the withdrawn copy is asserted ABSENT and the
+  // screen's replacement forward action is asserted present and USABLE, instead of the picker's own
+  // heading. Re-point both when `VCLAW_SPRINT_1_PICKER_HIDDEN` is set false.
+  await expect(
+    page.getByRole("heading", {
+      name: "Sign in to join the estate community",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
   expect(await readSavedRuntime(page)).toBeNull();
 });
 
@@ -781,7 +841,7 @@ test("defaults stages auto-selection and edits without writing when skipped", as
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -803,7 +863,17 @@ test("defaults stages auto-selection and edits without writing when skipped", as
 
   await page.getByTestId("onboarding-config-skip").click();
 
-  await expect(page.getByText("Join or create a community")).toBeVisible();
+  // The picker is GATED (see `navigateToSetupPage`): the withdrawn copy is asserted ABSENT and the
+  // screen's replacement forward action is asserted present and USABLE, instead of the picker's own
+  // heading. Re-point both when `VCLAW_SPRINT_1_PICKER_HIDDEN` is set false.
+  await expect(
+    page.getByRole("heading", {
+      name: "Sign in to join the estate community",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
   expect(await readSavedRuntime(page)).toBeNull();
   expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
 });
@@ -829,7 +899,7 @@ test("Back preserves incomplete defaults draft without writing", async ({
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page, "api");
@@ -889,7 +959,7 @@ test("defaults auto-selects the only ready visible harness", async ({
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -921,7 +991,7 @@ test("Next persists the harness chosen from the subscription list", async ({
       },
       setGlobalAgentConfigDelayMs: 300,
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -934,7 +1004,17 @@ test("Next persists the harness chosen from the subscription list", async ({
   await expect(finish).toBeEnabled();
   expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
   await finish.click();
-  await expect(page.getByText("Join or create a community")).toBeVisible();
+  // The picker is GATED (see `navigateToSetupPage`): the withdrawn copy is asserted ABSENT and the
+  // screen's replacement forward action is asserted present and USABLE, instead of the picker's own
+  // heading. Re-point both when `VCLAW_SPRINT_1_PICKER_HIDDEN` is set false.
+  await expect(
+    page.getByRole("heading", {
+      name: "Sign in to join the estate community",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
   await expect.poll(() => readSavedRuntime(page)).toBe("claude");
 });
 
@@ -956,7 +1036,7 @@ test("Next shows saving state and advances only after persistence", async ({
       },
       setGlobalAgentConfigDelayMs: 500,
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -973,7 +1053,17 @@ test("Next shows saving state and advances only after persistence", async ({
   await expect(page.getByTestId("onboarding-page-config")).toBeVisible();
   expect(await readSavedRuntime(page)).toBeNull();
 
-  await expect(page.getByText("Join or create a community")).toBeVisible();
+  // The picker is GATED (see `navigateToSetupPage`): the withdrawn copy is asserted ABSENT and the
+  // screen's replacement forward action is asserted present and USABLE, instead of the picker's own
+  // heading. Re-point both when `VCLAW_SPRINT_1_PICKER_HIDDEN` is set false.
+  await expect(
+    page.getByRole("heading", {
+      name: "Sign in to join the estate community",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
   expect(await readSavedRuntime(page)).toBe("claude");
 });
 
@@ -994,7 +1084,7 @@ test("Next keeps the draft and retries after a save failure", async ({
       },
       setGlobalAgentConfigErrors: ["Disk is read-only", null],
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -1014,7 +1104,17 @@ test("Next keeps the draft and retries after a save failure", async ({
   expect(await readGlobalConfigSetterCallCount(page)).toBe(1);
 
   await page.getByTestId("onboarding-finish").click();
-  await expect(page.getByText("Join or create a community")).toBeVisible();
+  // The picker is GATED (see `navigateToSetupPage`): the withdrawn copy is asserted ABSENT and the
+  // screen's replacement forward action is asserted present and USABLE, instead of the picker's own
+  // heading. Re-point both when `VCLAW_SPRINT_1_PICKER_HIDDEN` is set false.
+  await expect(
+    page.getByRole("heading", {
+      name: "Sign in to join the estate community",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
   expect(await readSavedRuntime(page)).toBe("claude");
   expect(await readGlobalConfigSetterCallCount(page)).toBe(2);
 });
@@ -1038,7 +1138,7 @@ test("defaults carries the chosen subscription harness forward", async ({
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
@@ -1094,7 +1194,7 @@ test("Finish stays disabled until a provider-required harness is fully configure
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page, "api");
@@ -1134,7 +1234,17 @@ test("Finish stays disabled until a provider-required harness is fully configure
 
   await expect(finish).toBeEnabled();
   await finish.click();
-  await expect(page.getByText("Join or create a community")).toBeVisible();
+  // The picker is GATED (see `navigateToSetupPage`): the withdrawn copy is asserted ABSENT and the
+  // screen's replacement forward action is asserted present and USABLE, instead of the picker's own
+  // heading. Re-point both when `VCLAW_SPRINT_1_PICKER_HIDDEN` is set false.
+  await expect(
+    page.getByRole("heading", {
+      name: "Sign in to join the estate community",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Join or create a community")).toHaveCount(0);
+  await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
   expect(await readSavedRuntime(page)).toBe("buzz-agent");
 });
 
@@ -1156,7 +1266,7 @@ test("API key options stay hidden when credential validation is not accepted", a
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page, "api");
@@ -1201,7 +1311,7 @@ test("baked build config keeps Finish enabled without manual provider setup", as
         preferred_runtime: null,
       },
     },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    { skipCommunitySeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page, "api");

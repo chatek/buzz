@@ -643,7 +643,6 @@ fn profile_event_rejects_invalid_auth_tag() {
     );
 }
 
-
 // ── /query row contract: every served row must carry its signature ────────
 //
 // 2026-10-01 username-step failure (operator-blocked at the profile screen):

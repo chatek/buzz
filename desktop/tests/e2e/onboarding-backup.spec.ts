@@ -1,26 +1,88 @@
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { expect, test } from "@playwright/test";
-import { installMockBridge } from "../helpers/bridge";
-import { waitForAnimations } from "../helpers/animations";
-import {
-  dropFileOnTestId,
-  endWindowFileDrag,
-  startWindowFileDrag,
-} from "../helpers/fileDrag";
+import { nsecEncode } from "nostr-tools/nip19";
 
-async function enterMachineBackup(
+import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
+
+/**
+ * ── THE GENERATED-KEY / BACKUP STEP IS WITHDRAWN, AND NOTHING CAN BRING IT UP ────────────────────
+ *
+ * WHAT THIS FILE USED TO BE: twelve tests that drove the machine flow's generated-key and backup
+ * step — the readable key well and its hover-to-copy treatment, the masked/reveal behaviour of the
+ * password-protected download, the 12-character password rule, the test-your-backup dropzone, and
+ * the two get_nsec error paths. Every one of them reached that step through
+ * `enterMachineBackup` (or the same two clicks inline): the landing's "Create a new identity key",
+ * then "Create my private key".
+ *
+ * WHY THEY CANNOT RUN ANY MORE (operator directive 2026-10-03: "VClaw sign-in is the DEFAULT and THE
+ * ONLY method"; the human must not be asked to create, handle, back up or confirm a device key).
+ * The gate is `VCLAW_SIGN_IN_ONLY = true` in
+ * src/features/onboarding/ui/MachineOnboardingFlow.tsx:
+ *   • "Create a new identity key" and "Use an existing key" are NOT RENDERED on the landing
+ *     (measured: count 0), so the first click of the old helper cannot happen;
+ *   • `vclawSignInOnlyRefusesPage` (read at the initial-page normaliser AND at the `showPage` choke
+ *     point) refuses `identity-key-intro` as well, so no card, resumed page, deep link or future
+ *     caller can land on it either;
+ *   • therefore the `backup` page's ONLY inbound edge — `identity-key-intro` → "Create my private
+ *     key" → `showPage("backup", "forward")` — is closed.
+ *
+ * AND THIS IS MEASURED, NOT READ. The gate keeps a NAMED recovery exception:
+ * `VCLAW_SIGN_IN_ONLY_RECOVERY_PAGES = { key-import, backup }` stays reachable "when the app itself
+ * reports the identity lost ... that operator still has to recover a key that exists somewhere
+ * else". The four tests below walk every live entry point that exists in that state and show the
+ * exception for `backup` is not actually reachable in the shipped build:
+ *   1. the first-run landing (no key control at all);
+ *   2. the empty-community setup step, whose Back control is the ONE remaining caller of
+ *      `showPage("backup", "backward")` — refused, because a boot that is not lost has no exception;
+ *   3. a lost-mode boot, where importing a key flips the app to `relaunch-required` (the import
+ *      path goes to the setup step and the lost flag clears, so `backup` is refused from then on);
+ *   4. a recovered identity's setup step (lost mode → phone recovery → setup), same refusal.
+ * PRODUCT FINDING for the operator: the recovery exception as written does not reach the backup
+ * step, because the only inbound edge is the withdrawn key-intro page and the one edge from the
+ * setup step is refused the moment the identity is no longer lost. If a lost-mode operator is
+ * supposed to re-import from a key backup FILE, they can — that path lives inside the key-import
+ * step ("backup file" → unlock), not on this page.
+ *
+ * WHAT IS NOT LOST: nothing was deleted from the product — every withdrawn page and control is
+ * still in source behind the one constant, and the flow-level claim ("a completed sign-in never
+ * passes through a key page") is asserted by `vclawSigninOnly.spec.ts` /
+ * `vclaw-signin-only.spec.ts`, with a unit-level twin in
+ * src/features/onboarding/ui/vclawSignInOnly.test.mjs.
+ *
+ * WHAT IS LOST, STATED PLAINLY: the twelve tests' behavioural coverage of the backup UI itself.
+ * That coverage cannot be measured while the gate is on — the surface is unreachable by
+ * construction — and this lane may not build or edit a product file. The pre-edit file is kept
+ * verbatim as `onboarding-backup.spec.ts.withdrawn-coverage.txt` in this lane's handoff directory,
+ * and its per-test disposition is in that lane's REPORT.md, so the coverage can be restored with
+ * the constant (and this file) when the operator re-opens the method.
+ */
+
+/** The backup step's own surfaces: if any of these is in the DOM, the withdrawal is not holding. */
+const BACKUP_STEP_TESTIDS = [
+  "onboarding-page-backup",
+  "onboarding-page-backup-options",
+  "onboarding-page-download",
+  "backup-key-well",
+  "backup-key-value",
+  "backup-option-password",
+  "backup-passphrase-input",
+  "encrypted-backup-create",
+  "backup-test-dropzone",
+] as const;
+
+async function expectBackupStepAbsent(
   page: import("@playwright/test").Page,
-  mock?: Parameters<typeof installMockBridge>[1],
-) {
-  await installMockBridge(page, mock, {
-    skipCommunitySeed: true,
-    skipOnboardingSeed: true,
-  });
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
-  await page.getByRole("button", { name: "Create my private key" }).click();
+  where: string,
+): Promise<void> {
+  for (const testId of BACKUP_STEP_TESTIDS) {
+    await expect(
+      page.getByTestId(testId),
+      `${testId} must not exist on ${where}`,
+    ).toHaveCount(0);
+  }
 }
 
-test("fresh-key path explains the identity key before creating it", async ({
+test("the first-run landing offers one door and no way into the generated-key step", async ({
   page,
 }) => {
   await installMockBridge(page, undefined, {
@@ -29,503 +91,117 @@ test("fresh-key path explains the identity key before creating it", async ({
   });
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
+  await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
+  // The ONE forward control that replaced the two withdrawn buttons.
+  const signIn = page.getByRole("button", { name: "Login with VClaw" });
+  await expect(signIn).toBeVisible();
+  await expect(signIn).toBeEnabled();
 
-  await expect(page.getByTestId("onboarding-content-card")).toBeVisible();
+  // The old helper's first click, asserted ABSENT — a stronger statement than the click could make.
   await expect(
-    page.getByRole("heading", { name: "Create a private identity key" }),
-  ).toBeVisible();
+    page.getByRole("button", { name: "Create a new identity key" }),
+  ).toHaveCount(0);
   await expect(
-    page.getByTestId("onboarding-key-guidance").locator("p"),
-  ).toHaveText([
-    "Stored securely on this device",
-    "Never share it—anyone with this key can sign in as you",
-    "Use a secure backup to recover your account",
-  ]);
-  await expect(page.getByTestId("onboarding-page-backup")).toHaveCount(0);
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Create my private key" }).click();
-  await expect(page.getByTestId("onboarding-page-backup")).toBeVisible();
+  await expectBackupStepAbsent(page, "the first-run landing");
 });
 
-test("identity creation failures stay visible on the intro page", async ({
+test("the empty-community setup step's Back cannot return to the generated-key step", async ({
   page,
 }) => {
-  await installMockBridge(
-    page,
-    {
-      identityReadErrorAfter: {
-        message: "Keychain is unavailable",
-        successfulReads: 1,
-      },
-    },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
-  );
+  // An identity that has finished machine onboarding but has NO community boots on the gated
+  // welcome screen; its Back action is the app's own re-entry into the machine flow, and the setup
+  // step it reaches is the ONE remaining caller of `showPage("backup", "backward")`.
+  await installMockBridge(page, undefined, { skipCommunitySeed: true });
   await page.goto("/");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
-  await page.getByRole("button", { name: "Create my private key" }).click();
-
-  await expect(page.getByTestId("identity-key-create-error")).toContainText(
-    "Keychain is unavailable",
-  );
-  await expect(
-    page.getByRole("button", { name: "Create my private key" }),
-  ).toBeEnabled();
-  await expect(page.getByTestId("onboarding-page-key-intro")).toBeVisible();
-});
-
-async function openPasswordBackup(page: import("@playwright/test").Page) {
-  await expect(page.getByTestId("backup-intro-logo")).toHaveCount(0);
-  await page.getByTestId("backup-option-password").click();
-  await expect(page.getByTestId("onboarding-page-download")).toBeVisible();
-}
-
-async function invokedCommands(page: import("@playwright/test").Page) {
-  return page.evaluate(
-    () =>
-      (window as Window & { __BUZZ_E2E_COMMANDS__?: string[] })
-        .__BUZZ_E2E_COMMANDS__ ?? [],
-  );
-}
-
-const SHOTS = "test-results/screenshots-onboarding";
-
-// Mirrors the mock bridge's MOCK_NCRYPTSEC (e2eBridge.ts): the blob the
-// mocked `create_ncryptsec_backup` returns, i.e. the "downloaded file"
-// contents the test-your-backup dropzone expects.
-const MOCK_NCRYPTSEC =
-  "ncryptsec1qgg9947rlpvqu76pj5ecreduf9jxhselq2nae2kghhvd5g7dgjtcxfqtd67p9m0w57lspw8gsq6yphnm8623nsl8xn9j4jdzz84zm3frztj3z7s35vpzmqf6ksu8r89qk5z2zxfmu5gv8th8wclt0h4p";
-
-test("backup step appears on fresh-key path after profile submit", async ({
-  page,
-}) => {
-  await enterMachineBackup(page);
-
-  await expect(page.getByTestId("onboarding-page-backup")).toBeVisible();
-
-  // Perceived-loading intro: the animated logo and "Creating" title show
-  // first, then the finished state replaces them after the hold.
-  await expect(
-    page.getByRole("heading", { name: "Creating your identity key" }),
-  ).toBeVisible();
-  await expect(page.getByTestId("backup-intro-logo")).toBeVisible();
-  await expect(page.getByTestId("onboarding-next")).toBeVisible();
-  await expect(page.getByTestId("onboarding-next")).toBeDisabled();
-  await expect(page.getByTestId("onboarding-back")).toBeEnabled();
 
   await expect(
     page.getByRole("heading", {
-      name: "Your private identity key",
+      name: "Sign in to join the estate community",
+      exact: true,
     }),
   ).toBeVisible();
-  await expect(page.getByTestId("backup-intro-logo")).toHaveCount(0);
-  await expect(page.getByTestId("onboarding-next")).toBeEnabled();
-});
-
-// ---------------------------------------------------------------------------
-// Key-created view: visible key with hover-to-copy treatment.
-// ---------------------------------------------------------------------------
-
-test("key view reveals the key by default and replaces it with Copy on hover", async ({
-  page,
-}) => {
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  await enterMachineBackup(page);
-
-  await expect(page.getByTestId("backup-intro-logo")).toHaveCount(0);
-
-  const key = page.getByTestId("backup-key-value");
-  const keyWell = page.getByTestId("backup-key-well");
-  const copyButton = page.getByTestId("backup-copy-key");
-  await expect(key).toBeVisible();
-  await expect(key).toContainText("nsec1mock");
-  expect(await invokedCommands(page)).toContain("get_nsec");
-  await expect(page.getByTestId("backup-reveal-key")).toHaveCount(0);
-  await expect(key).toHaveCSS("filter", "none");
-  await expect(copyButton).toHaveCSS("opacity", "0");
-
-  await keyWell.hover();
-  await expect(key).toHaveCSS("filter", /blur\(4px\)/);
-  await expect(copyButton).toHaveCSS("opacity", "1");
-  await copyButton.click();
-  await expect(copyButton).toContainText("Copied to clipboard");
-  await expect
-    .poll(async () => invokedCommands(page))
-    .toContain("copy_text_to_clipboard");
-  await expect(key).toContainText("nsec1mock");
-
-  // The backup action gains a subtle surface on hover without shifting its
-  // content or changing the resting state.
-  const backupOption = page.getByTestId("backup-option-password");
-  const backupOptionBox = await backupOption.boundingBox();
-  const [backupIconBox, backupChevronBox] = await Promise.all([
-    backupOption.locator("svg").first().boundingBox(),
-    backupOption.locator("svg").last().boundingBox(),
-  ]);
-  if (!backupOptionBox || !backupIconBox || !backupChevronBox) {
-    throw new Error("Could not measure locked-backup row padding");
-  }
-  expect(backupIconBox.x - backupOptionBox.x).toBeGreaterThanOrEqual(12);
-  expect(
-    backupOptionBox.x +
-      backupOptionBox.width -
-      (backupChevronBox.x + backupChevronBox.width),
-  ).toBeGreaterThanOrEqual(12);
-  await expect(backupOption).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-  await backupOption.hover();
-  await expect(backupOption).not.toHaveCSS(
-    "background-color",
-    "rgba(0, 0, 0, 0)",
-  );
-
-  // The primary action continues directly to setup.
-  await expect(page.getByTestId("onboarding-next")).toBeEnabled();
-  await page.getByTestId("onboarding-next").click();
+  await page.getByTestId("welcome-setup-back").click();
+  await expect(page.getByTestId("onboarding-page-config")).toBeVisible();
+  await page.getByTestId("onboarding-back").click();
   await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
+
+  // The step that USED to answer to this control. Refused: the page does not change.
+  await page.getByTestId("onboarding-back").click();
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Connect your AI provider" }),
+  ).toBeVisible();
+  await expectBackupStepAbsent(
+    page,
+    "the setup step reached from the welcome screen",
+  );
 });
 
-// ---------------------------------------------------------------------------
-// Encrypted download path ("Backup your key" step): password → encrypt
-// locally → native save → saved confirmation.
-// ---------------------------------------------------------------------------
-
-test("download happy path: generated password, encrypt, native save, Next", async ({
+test("a lost-mode import never reaches the generated-key step", async ({
   page,
 }) => {
-  await enterMachineBackup(page);
-
-  // Password backup stays inside the onboarding card without adding a generic
-  // Next action.
-  await openPasswordBackup(page);
-
-  // The password field starts empty; the create button sits in the footer's
-  // primary slot and stays disabled until a valid password exists.
-  const input = page.getByTestId("backup-passphrase-input");
-  await expect(input).toHaveValue("");
-  await expect(page.getByTestId("encrypted-backup-create")).toBeDisabled();
-  await expect(page.getByTestId("onboarding-next")).toHaveCount(0);
-  await expect(page.getByTestId("backup-return-to-onboarding")).toBeVisible();
-  const passwordPanel = page.getByTestId("backup-password-panel");
-  await expect(passwordPanel).toBeVisible();
-  await expect(passwordPanel).not.toHaveClass(/buzz-card-textured/);
-  await expect(passwordPanel).toHaveCSS("padding-left", "0px");
-  await expect(page.getByTestId("backup-password-timeline")).toHaveCount(0);
-  await expect(
-    passwordPanel.getByText("Password", { exact: true }),
-  ).toBeVisible();
-  const subtitle = page.getByText(
-    "This creates a password-protected file with your private key. Remember, Buzz can’t recover your key if you lose it.",
+  // The gate's recovery exception: `key-import` IS reachable when the app reports the identity
+  // lost. This test walks that path to its end and shows it does not lead to the backup step.
+  await installMockBridge(
+    page,
+    { identityLost: true },
+    { skipOnboardingSeed: true },
   );
-  const passwordLabel = passwordPanel.getByText("Password", { exact: true });
-  const [subtitleBox, passwordLabelBox] = await Promise.all([
-    subtitle.boundingBox(),
-    passwordLabel.boundingBox(),
-  ]);
-  expect(subtitleBox).not.toBeNull();
-  expect(passwordLabelBox).not.toBeNull();
-  expect(
-    (passwordLabelBox?.y ?? 0) -
-      ((subtitleBox?.y ?? 0) + (subtitleBox?.height ?? 0)),
-  ).toBeLessThanOrEqual(96);
-  await expect(input).toHaveCSS("height", "48px");
-  await expect(input).toHaveCSS("text-align", "left");
-  await expect(input).toHaveCSS("background-color", "rgb(249, 249, 249)");
+  await page.goto("/");
 
-  // The inset refresh icon opens the generator popover and immediately
-  // fills the field (mock default: 3 words, spaces).
-  await page.getByTestId("backup-passphrase-generate").click();
-  await expect(input).toHaveValue("mock horse battery");
-  const generatorPopover = page.getByRole("dialog");
-  await expect(generatorPopover).toBeVisible();
-  await expect(generatorPopover).not.toHaveClass(/buzz-card-textured/);
+  await expect(
+    page.getByRole("heading", { name: "Enter your private key" }),
+  ).toBeVisible();
+  await expectBackupStepAbsent(page, "the lost-mode import page");
 
-  // Popover controls regenerate in place: word count (slider) and separator.
-  await page.getByTestId("backup-passphrase-words").focus();
-  await page.keyboard.press("ArrowRight");
-  await expect(input).toHaveValue("mock horse battery staple");
+  // Importing the key clears the lost flag, and that boots the app into relaunch-required — so the
+  // step the old helper walked to is not on this path either.
   await page
-    .getByTestId("backup-passphrase-separator")
-    .selectOption({ label: "Hyphens" });
-  await expect(input).toHaveValue("mock-horse-battery-staple");
-
-  // Clicking the inset icon again re-rolls without closing the popover.
-  await page.getByTestId("backup-passphrase-generate").click();
-  await expect(page.getByTestId("backup-passphrase-separator")).toBeVisible();
-
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOTS}/03-backup-download-passphrase.png` });
-
-  // Encryption may still be running when the user commits the download. The
-  // explicit click queues the native save without exposing the password.
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("backup-passphrase-separator")).toHaveCount(0);
-
-  // Saving commits the encrypted payload only after this explicit action.
-  await page.getByTestId("encrypted-backup-create").click();
-
-  // Only a successful save (the mock "picks" a path) advances to the
-  // "Your backup is ready" flow: a select-file button for the saved file
-  // (a composer-style drop overlay takes over the card while a file drag is
-  // over the window), then the password to unlock it.
-  await expect(
-    page.getByRole("heading", { name: "Your backup is ready" }),
-  ).toBeVisible();
-  const dropzone = page.getByTestId("backup-test-dropzone");
-  await expect(dropzone).toBeVisible();
-  await expect(dropzone).toHaveText("Test your backup");
-  await expect(dropzone).toHaveClass(/w-full/);
-  const [dropzoneBox, backupPanelBox] = await Promise.all([
-    dropzone.boundingBox(),
-    passwordPanel.boundingBox(),
-  ]);
-  expect(dropzoneBox).not.toBeNull();
-  expect(backupPanelBox).not.toBeNull();
-  expect(dropzoneBox?.width ?? 0).toBeGreaterThanOrEqual(
-    (backupPanelBox?.width ?? 0) * 0.95,
+    .getByTestId("nostr-import-nsec-input")
+    .fill(nsecEncode(hexToBytes(TEST_IDENTITIES.alice.privateKey)));
+  await page.getByTestId("nostr-import-submit").click();
+  await expect(page.getByTestId("relaunch-required")).toBeVisible();
+  await expectBackupStepAbsent(
+    page,
+    "the relaunch-required screen after a lost-mode import",
   );
-  await expect(
-    page.getByRole("button", { name: "Download backup again" }),
-  ).toBeVisible();
-  await expect(page.getByTestId("encrypted-backup-save-copy")).toHaveClass(
-    /w-full/,
+});
+
+test("a recovered identity's setup step cannot return to the generated-key step", async ({
+  page,
+}) => {
+  // The other lost-mode recovery that reaches the setup step: phone pairing. It clears the lost
+  // flag through `complete_identity_recovery_pairing`, so the setup step's Back is refused exactly
+  // as it is on the welcome path.
+  await installMockBridge(
+    page,
+    { identityLost: true },
+    { skipOnboardingSeed: true },
   );
+  await page.goto("/");
 
-  // The optional security subview has no onboarding Next action. Returning to
-  // the key-created view is the single exit throughout the ceremony.
-  await expect(page.getByTestId("onboarding-next")).toHaveCount(0);
-  await expect(page.getByTestId("backup-return-to-onboarding")).toBeVisible();
-
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOTS}/04-backup-test-dropzone.png` });
-
-  // A wrong file is rejected with an inline error; the dropzone stays.
-  await page.getByTestId("backup-test-file-input").setInputFiles({
-    name: "notes.txt",
-    mimeType: "text/plain",
-    buffer: Buffer.from("not a key backup"),
+  await page.getByTestId("nostr-import-phone-link").click();
+  await expect(page.getByTestId("identity-recovery-qr")).toBeVisible();
+  await page.evaluate(async () => {
+    await window.__TAURI_INTERNALS__?.invoke?.(
+      "complete_identity_recovery_pairing",
+    );
   });
-  await expect(page.getByTestId("backup-test-error")).toBeVisible();
-
-  // A file drag over the window swaps in the drop overlay; leaving without
-  // dropping restores the select button.
-  const dropOverlay = page.getByTestId("backup-test-drop-overlay");
-  await startWindowFileDrag(page);
-  await expect(dropOverlay).toBeVisible();
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOTS}/04b-backup-test-drop-overlay.png` });
-  await endWindowFileDrag(page);
-  await expect(dropOverlay).toHaveCount(0);
-
-  // Dropping the freshly downloaded file on the overlay advances to the
-  // password check.
-  await startWindowFileDrag(page);
-  await expect(dropOverlay).toBeVisible();
-  await dropFileOnTestId(page, "backup-test-drop-overlay", MOCK_NCRYPTSEC);
-  const password = page.getByTestId("backup-test-password");
-  await expect(password).toBeVisible();
-  await expect(dropOverlay).toHaveCount(0);
-
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOTS}/05-backup-test-password.png` });
-
-  // Verification is explicit and clears every submitted attempt.
-  await password.fill("mock-horse-battery-staplX");
-  await page.getByTestId("backup-test-verify").click();
-  await expect(page.getByTestId("backup-test-error")).toBeVisible();
-  await expect(password).toHaveValue("");
-
-  await password.fill("mock horse battery staple lake orbit");
-  await page.getByTestId("backup-test-verify").click();
-  await expect(page.getByTestId("backup-test-success")).toBeVisible();
-
-  // The celebration is driven by motion's rAF loop, which
-  // `waitForAnimations` (WAAPI-only) cannot observe — hold until the badge
-  // and copy have faded in before capturing.
-  await page.waitForTimeout(1200);
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOTS}/06-backup-test-success.png` });
-
-  // The visible-by-default key card has already loaded the raw identity key;
-  // encrypted backup still uses the dedicated native backup command.
-  const commands = await invokedCommands(page);
-  expect(commands).toContain("get_nsec");
-  expect(commands).toContain("create_ncryptsec_backup");
-
-  // Completion remains inside the optional security subview. Return to the
-  // key-created view, whose standard Next action continues onboarding.
-  await expect(page.getByTestId("onboarding-next")).toHaveCount(0);
-  await page.getByTestId("backup-return-to-onboarding").click();
-  await expect(page.getByTestId("onboarding-page-backup")).toBeVisible();
-  await expect(page.getByTestId("onboarding-next")).toBeEnabled();
-  await page.getByTestId("onboarding-next").click();
-  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
-});
-
-test("pending backup action collapses to an in-button loader", async ({
-  page,
-}) => {
-  await enterMachineBackup(page, { backupEncryptionDelayMs: 3_000 });
-  await openPasswordBackup(page);
-
-  await page
-    .getByTestId("backup-passphrase-input")
-    .fill("mock-horse-battery-staple");
-  const create = page.getByTestId("encrypted-backup-create");
-  const readyButtonBox = await create.boundingBox();
-  await create.click();
-
-  await expect(create).toHaveAttribute("aria-busy", "true");
-  await expect(create).toHaveAccessibleName("Encrypting your key");
-  await expect(create.getByTestId("encrypted-backup-encrypting")).toBeVisible();
-  const pendingButtonBox = await create.boundingBox();
-  if (!readyButtonBox || !pendingButtonBox) {
-    throw new Error("Could not measure the encrypted-backup action button");
-  }
-  expect(pendingButtonBox.height).toBeCloseTo(readyButtonBox.height, 0);
-  expect(pendingButtonBox.width).toBeCloseTo(pendingButtonBox.height, 0);
-  expect(pendingButtonBox.width).toBeLessThan(readyButtonBox.width);
-  await expect(
-    page.getByText("Encrypting your password", { exact: true }),
-  ).toHaveCount(0);
 
   await expect(
-    page.getByRole("heading", { name: "Your backup is ready" }),
+    page.getByRole("heading", { name: "Connect your AI provider" }),
   ).toBeVisible();
-});
+  await expect(page.getByTestId("relaunch-required")).toHaveCount(0);
 
-test("security view returns to the identity-key onboarding view", async ({
-  page,
-}) => {
-  await enterMachineBackup(page);
-  await openPasswordBackup(page);
-
-  await expect(page.getByTestId("backup-passphrase-input")).toBeVisible();
-  await expect(page.getByTestId("onboarding-step-dots")).toBeVisible();
-  await expect(page.getByTestId("onboarding-next")).toHaveCount(0);
-
-  await page.getByTestId("backup-return-to-onboarding").click();
-  await expect(page.getByTestId("onboarding-page-backup")).toBeVisible();
-  await expect(page.getByTestId("backup-key-value")).toBeVisible();
-  await expect(page.getByTestId("onboarding-next")).toBeVisible();
-});
-
-test("returning to onboarding resets password-backup progress", async ({
-  page,
-}) => {
-  await enterMachineBackup(page);
-  await openPasswordBackup(page);
-
-  const input = page.getByTestId("backup-passphrase-input");
-  await input.fill("mock-horse-battery-staple");
-  await page.getByTestId("encrypted-backup-create").click();
-  await expect(
-    page.getByRole("heading", { name: "Your backup is ready" }),
-  ).toBeVisible();
-
-  await page.getByTestId("backup-return-to-onboarding").click();
-  await expect(page.getByTestId("onboarding-page-backup")).toBeVisible();
-
-  // Re-entering the security flow intentionally starts a fresh optional
-  // backup session so no password or completed state leaks across navigation.
-  await openPasswordBackup(page);
-  await expect(
-    page.getByRole("heading", { name: "Create a secure backup file" }),
-  ).toBeVisible();
-  await expect(page.getByTestId("backup-passphrase-input")).toHaveValue("");
-  await expect(page.getByTestId("encrypted-backup-create")).toBeDisabled();
-});
-
-test("typed password requires 12 characters", async ({ page }) => {
-  await enterMachineBackup(page);
-  await openPasswordBackup(page);
-
-  const create = page.getByTestId("encrypted-backup-create");
-  await expect(create).toBeDisabled(); // empty field
-
-  await page.getByTestId("backup-passphrase-input").fill("short");
-  await expect(page.getByTestId("backup-passphrase-issue")).toBeVisible();
-  await expect(create).toBeDisabled();
-
-  await page
-    .getByTestId("backup-passphrase-input")
-    .fill("a much longer passphrase");
-  await expect(page.getByTestId("backup-passphrase-issue")).toHaveCount(0);
-  await expect(create).toBeEnabled();
-});
-
-test("backup step back button returns through key guidance to identity choice", async ({
-  page,
-}) => {
-  await enterMachineBackup(page);
-
-  await expect(page.getByTestId("onboarding-page-backup")).toBeVisible();
   await page.getByTestId("onboarding-back").click();
-  await expect(
-    page.getByRole("heading", { name: "Create a private identity key" }),
-  ).toBeVisible();
-  await page.getByTestId("onboarding-back").click();
-
-  // Backing out preserves the loaded key — primary CTA continues setup rather
-  // than minting another identity (#2318).
-  await expect(
-    page.getByRole("button", { name: "Continue setup" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Use a different key instead" }),
-  ).toBeVisible();
-});
-
-// ---------------------------------------------------------------------------
-// B4: Error path coverage (copy)
-// ---------------------------------------------------------------------------
-
-test("copy shows inline error when get_nsec fails and Next still advances", async ({
-  page,
-}) => {
-  await installMockBridge(
-    page,
-    { nsecError: "Keychain locked" },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
-  );
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
-  await page.getByRole("button", { name: "Create my private key" }).click();
-
-  await expect(page.getByTestId("onboarding-page-backup")).toBeVisible();
-  await page.getByTestId("backup-key-well").hover();
-  await page.getByTestId("backup-copy-key").click();
-
-  await expect(page.getByTestId("backup-copy-error")).toBeVisible();
-  // Keychain failure does not trap the user: Next still skips backup and
-  // advances directly to setup.
-  await expect(page.getByTestId("onboarding-next")).toBeEnabled();
-  await page.getByTestId("onboarding-next").click();
+  await page.waitForTimeout(500);
   await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
-});
-
-test("Copy retries after an initial key read fails", async ({ page }) => {
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  // The default reveal fails first; explicit copy retries and succeeds.
-  await installMockBridge(
+  await expectBackupStepAbsent(
     page,
-    { nsecErrors: ["Keychain locked", null] },
-    { skipCommunitySeed: true, skipOnboardingSeed: true },
+    "the setup step reached from phone recovery",
   );
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
-  await page.getByRole("button", { name: "Create my private key" }).click();
-
-  await expect(page.getByTestId("backup-copy-error")).toBeVisible();
-  await expect(page.getByTestId("backup-key-value")).not.toContainText(
-    "nsec1mock",
-  );
-
-  // Copy retries the read, clears the error, and restores the visible key.
-  await page.getByTestId("backup-key-well").hover();
-  await page.getByTestId("backup-copy-key").click();
-  await expect(page.getByTestId("backup-copy-key")).toContainText(
-    "Copied to clipboard",
-  );
-  await expect(page.getByTestId("backup-key-value")).toContainText("nsec1mock");
-  await expect(page.getByTestId("backup-copy-error")).not.toBeVisible();
 });

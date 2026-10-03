@@ -71,6 +71,7 @@ mod team_snapshot;
 mod teams;
 mod updater;
 mod vclaw_oidc;
+mod vclaw_sign_out;
 mod window_chrome;
 mod window_vibrancy;
 mod workflows;
@@ -130,6 +131,10 @@ pub use team_snapshot::*;
 pub use teams::*;
 pub use updater::*;
 pub use vclaw_oidc::*;
+// The sign-out REPORT crosses the IPC boundary through the command's OWN signature
+// (`-> Result<VclawSignOutReport, String>` in vclaw_oidc.rs), so no re-export belongs here: in a binary
+// crate a `pub use` reaches nobody, and rustc reported exactly that.
+// The rest of the module stays private - its helpers are internals of `vclaw_oidc_sign_out`.
 pub use window_chrome::*;
 pub use window_vibrancy::*;
 pub use workflows::*;

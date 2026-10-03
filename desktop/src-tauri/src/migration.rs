@@ -85,7 +85,10 @@ pub(crate) fn is_dev_data_dir_name(name: &str) -> bool {
     std::iter::once(CANONICAL_DEV_IDENTIFIER)
         .chain(OTHER_DEV_IDENTIFIERS.iter().copied())
         .any(|id| {
-            name == id || name.strip_prefix(id).is_some_and(|rest| rest.starts_with('.'))
+            name == id
+                || name
+                    .strip_prefix(id)
+                    .is_some_and(|rest| rest.starts_with('.'))
         })
 }
 
@@ -97,7 +100,11 @@ pub(crate) fn legacy_app_data_dir(current: &Path) -> Option<PathBuf> {
     let name = current.file_name()?.to_str()?;
     let legacy_name = if name.starts_with(CANONICAL_DEV_IDENTIFIER) {
         // A dev dir keeps its worktree suffix: VClawBuzz.dev.my-branch -> xyz.block.buzz.app.dev.my-branch
-        name.replacen(CANONICAL_DEV_IDENTIFIER, LEGACY_CANONICAL_DEV_IDENTIFIER_BUZZ, 1)
+        name.replacen(
+            CANONICAL_DEV_IDENTIFIER,
+            LEGACY_CANONICAL_DEV_IDENTIFIER_BUZZ,
+            1,
+        )
     } else if name == RELEASE_IDENTIFIER {
         LEGACY_RELEASE_IDENTIFIER_BUZZ.to_owned()
     } else if name.starts_with(LEGACY_CANONICAL_DEV_IDENTIFIER_BUZZ) {

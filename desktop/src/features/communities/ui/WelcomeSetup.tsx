@@ -14,6 +14,15 @@ import { useIdentityQuery } from "@/shared/api/hooks";
 import { writeTextToClipboard } from "@/shared/lib/clipboard";
 import { pubkeyToNpub } from "@/shared/lib/nostrUtils";
 import { useSystemColorScheme } from "@/shared/theme/useSystemColorScheme";
+import { useCommunities } from "@/features/communities/useCommunities";
+import { VCLAW_RELAY_URL } from "@/features/onboarding/vclawCommunityProvision";
+import {
+  describeVclawSignInFailure,
+  signInWithVclaw,
+  VclawSignInFailure,
+} from "@/features/onboarding/vclawSignIn";
+import type { OrgVerdict } from "@/features/onboarding/vclawOrg";
+import { VclawOrgField } from "@/features/onboarding/ui/VclawOrgField";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
@@ -60,7 +69,65 @@ export function WelcomeSetup({
   // behind the modal never changes out from under the user.
   const [isHostedSignInOpen, setIsHostedSignInOpen] = React.useState(false);
   const [copiedNpub, setCopiedNpub] = React.useState(false);
+  const [isVclawPending, setIsVclawPending] = React.useState(false);
+  const [vclawMessage, setVclawMessage] = React.useState<string | null>(null);
+  // The ESTATE's answer to the org entered in the field below — shown here for the same reason as
+  // on the entry screen: the claim decides, and its answer is what the human sees. `null` before a
+  // sign-in and after a STOP.
+  const [vclawOrg, setVclawOrg] = React.useState<OrgVerdict | null>(null);
   const communityOnboarding = useCommunityOnboarding();
+  const { reloadFromStorage } = useCommunities();
+
+  // THE SAME SIGN-IN AS THE ENTRY SCREEN, for the case where this page is reached with no
+  // community: the IdP, then THE ESTATE'S ANSWER TO THE ORG (a miss stops before the community is
+  // entered), then the device key the Rust layer already holds, then the estate community, then the
+  // subject recorded beside the key (see `vclawSignIn.ts` — one sequence, two screens). On success the community is in storage, so `reloadFromStorage` is what turns
+  // this page into the app itself, exactly as the machine-onboarding handoff does.
+  //
+  // WHY THIS PAGE HAS IT AT ALL: with the community picker gated, this screen used to say
+  // "Use Back to sign in" and offer NO forward action — a dead end the operator reached. It is
+  // not reachable in the vclaw flow (the sign-in provisions the community before the app mounts,
+  // so `needsSetup` is false), but a reachable dead end is a bug whether or not it is the path
+  // we expect, so the fallback is the sign-in rather than an instruction to go backwards.
+  const signIn = React.useCallback(
+    async (org: string) => {
+      setIsVclawPending(true);
+      setVclawMessage(null);
+      setVclawOrg(null);
+      try {
+        const {
+          account,
+          provision,
+          link,
+          org: grantedOrg,
+        } = await signInWithVclaw(org);
+        setVclawOrg(grantedOrg);
+        setVclawMessage(
+          `Signed in to vclaw as ${account.subject}` +
+            (provision.error
+              ? ` — the estate community could not be provisioned (${provision.error}).`
+              : ` — the estate community ${VCLAW_RELAY_URL} is ready.`) +
+            (link
+              ? ""
+              : " The subject could not be recorded beside this device's key."),
+        );
+        reloadFromStorage();
+      } catch (cause) {
+        // A refusal from the ESTATE is not an IdP error, and saying so would send the reader to
+        // the issuer when the claim was what said no (see the pitfall log's wrong-layer entries).
+        const stopped = cause instanceof VclawSignInFailure ? cause : null;
+        setVclawOrg(stopped?.verdict ?? null);
+        // An ORG refusal IS the estate's answer: it renders as the verdict, once, and is not repeated
+        // as a second sentence.
+        setVclawMessage(
+          stopped?.stage === "org" ? null : describeVclawSignInFailure(cause),
+        );
+      } finally {
+        setIsVclawPending(false);
+      }
+    },
+    [reloadFromStorage],
+  );
   const identityQuery = useIdentityQuery();
   const systemColorScheme = useSystemColorScheme();
   const npub = identityQuery.data?.pubkey
@@ -166,7 +233,7 @@ export function WelcomeSetup({
                 </h1>
                 <p className="mt-3 text-sm leading-6 text-foreground/80">
                   {VCLAW_SPRINT_1_PICKER_HIDDEN
-                    ? "This build joins the vclaw estate's own community when you sign in with VClaw. Use Back to sign in."
+                    ? "This build joins the vclaw estate's own community when you sign in with VClaw."
                     : "Join with an invite, create your own community, or reconnect one you already have."}
                 </p>
               </div>
@@ -182,48 +249,82 @@ export function WelcomeSetup({
                   the SPRINT-1 gate (VCLAW_SPRINT_1_PICKER_HIDDEN) at the initial-page normaliser and
                   at showPage, so a card, a resumed page or a future caller cannot land on them.
                   RESTORE: set the constant false; the options and pages are intact in source. */}
-              {VCLAW_SPRINT_1_PICKER_HIDDEN ? null : (
-              <div className="flex w-full flex-1 translate-y-16 flex-col items-center justify-center gap-20 py-8">
-                <Card
-                  asChild
-                  className={COMMUNITY_OPTION_CARD_CLASS}
-                  variant="textured"
-                >
-                  <button
-                    data-testid="community-choice-join"
-                    onClick={() => showPage("join")}
-                    type="button"
+              {/* The vclaw action, rendered INSTEAD of the picker while the gate is on. It is
+                  the only forward control on this page, and it is the same sequence as the entry
+                  screen's — one module, so the two cannot drift. No second switch: this reads the
+                  same VCLAW_SPRINT_1_PICKER_HIDDEN as the hidden block below. */}
+              {VCLAW_SPRINT_1_PICKER_HIDDEN ? (
+                <div className="flex w-full flex-1 translate-y-16 flex-col items-center justify-center gap-4 py-8">
+                  {/* The SAME field and the same sign-in as the entry screen — one module, so the
+                      two cannot drift. The field owns the CTA: while the org is invalid there is no
+                      next step (docs/UI_INPUT_VALIDATION.md), and no list of orgs is offered. */}
+                  <VclawOrgField
+                    ctaTestId="welcome-vclaw-sign-in"
+                    onSignIn={(org) => void signIn(org)}
+                    pending={isVclawPending}
                   >
-                    Join a community
-                  </button>
-                </Card>
-                <Card
-                  asChild
-                  className={COMMUNITY_OPTION_CARD_CLASS}
-                  variant="textured"
-                >
-                  <button
-                    data-testid="community-choice-create"
-                    onClick={beginHostedCommunity}
-                    type="button"
+                    {vclawOrg ? (
+                      <p
+                        className={
+                          vclawOrg.status === "not-granted"
+                            ? "break-words text-xs leading-5 text-destructive"
+                            : "break-words text-xs leading-5 text-muted-foreground"
+                        }
+                        data-status={vclawOrg.status}
+                        data-testid="vclaw-org-verdict"
+                      >
+                        {vclawOrg.message}
+                      </p>
+                    ) : null}
+                    {vclawMessage ? (
+                      <p className="break-words text-xs leading-5 text-muted-foreground">
+                        {vclawMessage}
+                      </p>
+                    ) : null}
+                  </VclawOrgField>
+                </div>
+              ) : (
+                <div className="flex w-full flex-1 translate-y-16 flex-col items-center justify-center gap-20 py-8">
+                  <Card
+                    asChild
+                    className={COMMUNITY_OPTION_CARD_CLASS}
+                    variant="textured"
                   >
-                    Create a community
-                  </button>
-                </Card>
-                <Card
-                  asChild
-                  className={COMMUNITY_OPTION_CARD_CLASS}
-                  variant="textured"
-                >
-                  <button
-                    data-testid="community-choice-existing"
-                    onClick={() => showPage("existing")}
-                    type="button"
+                    <button
+                      data-testid="community-choice-join"
+                      onClick={() => showPage("join")}
+                      type="button"
+                    >
+                      Join a community
+                    </button>
+                  </Card>
+                  <Card
+                    asChild
+                    className={COMMUNITY_OPTION_CARD_CLASS}
+                    variant="textured"
                   >
-                    I already have a community
-                  </button>
-                </Card>
-              </div>
+                    <button
+                      data-testid="community-choice-create"
+                      onClick={beginHostedCommunity}
+                      type="button"
+                    >
+                      Create a community
+                    </button>
+                  </Card>
+                  <Card
+                    asChild
+                    className={COMMUNITY_OPTION_CARD_CLASS}
+                    variant="textured"
+                  >
+                    <button
+                      data-testid="community-choice-existing"
+                      onClick={() => showPage("existing")}
+                      type="button"
+                    >
+                      I already have a community
+                    </button>
+                  </Card>
+                </div>
               )}
             </OnboardingSlideTransition>
           ) : page === "existing" ? (

@@ -412,6 +412,168 @@ pub(crate) fn clear_builderlab_auth(
     Ok(())
 }
 
+// ── Identity-class requests: NIP-98, never a Builderlab session ──────────────
+//
+// RULING A OF THE AGENTS SPRINT (2026-10-02). The `.../nostr-identities/*` calls
+// below used to travel to the vendor host carrying the Builderlab SESSION
+// credential (`X-BB-Session-Credential`, BB_SESSION_CREDENTIAL_HEADER above). They
+// no longer do, and the reason is the swap's own reason:
+//
+//   * a permanent second credential path keeps a third party (Builderlab) inside
+//     vclaw's trust chain, which is what the swap exists to end;
+//   * the estate is already Schnorr-native on the verifying side — BIP-340 over the
+//     event id — so ONE credential class covers the relay AND identity;
+//   * two credential paths double the audit surface.
+//
+// So an identity request is authenticated by the user's OWN identity key signing a
+// kind-27235 event, sent as `Authorization: Nostr <base64(event)>`: byte for byte the
+// header `crate::relay::build_nip98_auth_header_for_keys` already builds for
+// `POST /query` and `POST /events`, and the header the estate's verifier reads
+// (vgate `buzzid.NIP98Gate`, restated from
+// buzz-gateway/internal/api/auth_nip98.go). This is a transport change, not a new
+// protocol.
+//
+// The estate NEVER accepted the session credential, so there is no dual-credential
+// window on the server: the only place the retired path could survive is an old
+// app binary, and old binaries simply keep talking to the vendor. That is why the
+// transition window below is a CLIENT release window and nothing else.
+//
+// The three identity commands therefore take NO `BuilderlabSession`. That parameter
+// is not merely unused — dropping it is what makes "an identity call cannot carry the
+// vendor session" a property of the type system instead of a promise.
+const IDENTITY_CURRENT_PATH: &str = "/v1/buzz/nostr-identities/current";
+const IDENTITY_CHALLENGE_PATH: &str = "/v1/buzz/nostr-identities/challenge";
+const IDENTITY_VERIFY_PATH: &str = "/v1/buzz/nostr-identities/verify";
+const IDENTITY_DELETE_PATH: &str = "/v1/buzz/nostr-identities/delete";
+
+/// The ESTATE's identity base URL — the origin that serves the relay AND
+/// `/v1/buzz/*` (services/nginx/buzz.vclawhub.com.conf `location /v1/buzz` →
+/// vgate:8081), derived from the app's own relay configuration.
+///
+/// Deriving it instead of hard-coding a host is deliberate: the identity path then
+/// cannot drift to a second host, and a workspace relay override moves the relay and
+/// identity together. `relay_api_base_url_with_override` is the same function the
+/// `/query` bridge uses, so "which estate am I talking to" has one answer.
+fn identity_url_from_base(base: &str, path: &str) -> Result<Url, String> {
+    Url::parse(&format!("{}{path}", base.trim_end_matches('/')))
+        .map_err(|error| format!("invalid identity API URL: {error}"))
+}
+
+fn estate_identity_url(app_state: &crate::app_state::AppState, path: &str) -> Result<Url, String> {
+    identity_url_from_base(
+        &crate::relay::relay_api_base_url_with_override(app_state),
+        path,
+    )
+}
+
+/// The origin the challenge will be minted for: scheme + host (+ port), no path.
+///
+/// The estate's challenge mints `origin` into the signed binding event and requires
+/// https with no path or query (vgate/internal/buzzid/challenge.go ValidateOrigin),
+/// which is what makes the user's consent page provably the same origin the app is
+/// talking to. It replaces the constant `BUILDERLAB_ORIGIN` on this path.
+fn estate_identity_origin(base: &str) -> Result<String, String> {
+    let url = identity_url_from_base(base, "/")?;
+    if url.host_str().is_none() {
+        return Err("identity API URL has no host".to_owned());
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+/// POST a JSON body to the estate identity API, authenticated with NIP-98.
+///
+/// Signing uses `AppState::signing_keys()`, NOT `state.keys`: that accessor is the
+/// one place that refuses to sign while the identity is lost or the keyring is locked
+/// (app_state_accessors.rs:52), and an identity request is exactly the kind of request
+/// that must not be signed with a key that is not really the user's.
+async fn nip98_identity_json(
+    app_state: &crate::app_state::AppState,
+    method: reqwest::Method,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let url = estate_identity_url(app_state, path)?;
+    let body_bytes = serde_json::to_vec(&body)
+        .map_err(|error| format!("invalid identity request body: {error}"))?;
+    let auth = {
+        let keys = app_state.signing_keys()?;
+        crate::relay::build_nip98_auth_header_for_keys(&keys, &method, url.as_str(), &body_bytes)?
+    };
+    let response = app_state
+        .http_client
+        .request(method, url)
+        .header(reqwest::header::AUTHORIZATION, auth)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body_bytes)
+        .timeout(Duration::from_secs(IDENTITY_REQUEST_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|error| format!("identity request failed: {error}"))?;
+    let status = response.status();
+    let mut value: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|error| format!("invalid identity response: {error}"))?;
+    if !status.is_success() {
+        // The estate answers the frozen vgate envelope `{error: "<code>", message, detail}`
+        // (vgate/internal/apierr) — note `error` is a STRING. Every caller of these
+        // commands reads `error.code` (hostedCommunityApi.ts:20-24 and the
+        // `hostedCommunityErrorMessage` lookup at :80-88), so the flat envelope is
+        // translated into the nested shape the UI already understands before it is
+        // returned. Without this the app would throw away a `restricted: …` refusal and
+        // show the generic fallback sentence — a refusal the user cannot act on.
+        if value.get("error").is_some() {
+            normalize_identity_error(&mut value);
+            return Ok(value);
+        }
+        return Err(format!("identity request failed (HTTP {status})."));
+    }
+    Ok(value)
+}
+
+/// Re-shape the estate's flat error envelope into the nested one this app's UI reads.
+///
+/// `{"error":"<code>","message":"…","detail":{…}}` → `{"error":{"code":…,"message":…,"detail":…}}`.
+/// A value whose `error` is not a string is left EXACTLY as it arrived: this function
+/// translates one known shape and never guesses at another, so a future server shape
+/// surfaces as itself rather than as a mangled one.
+///
+/// Why translate in Rust instead of teaching the frontend: the extension points are the
+/// contrast. Here it is one function in the one helper every identity call already uses,
+/// and the still-vendor `communities/*` path — which genuinely does return the nested
+/// shape — is untouched. In the frontend it would be ~20 `.error` use sites across
+/// `hostedCommunityApi.ts` and `HostedCommunitiesSettingsCard.tsx`, including a working
+/// vendor path, to fix a shape only the estate emits.
+fn normalize_identity_error(value: &mut serde_json::Value) {
+    let Some(code) = value
+        .get("error")
+        .and_then(|error| error.as_str())
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    let message = value
+        .get("message")
+        .and_then(|message| message.as_str())
+        .map(str::to_owned);
+    let detail = value.get("detail").cloned();
+
+    let mut nested = serde_json::Map::new();
+    nested.insert("code".to_owned(), serde_json::Value::String(code));
+    if let Some(message) = message {
+        nested.insert("message".to_owned(), serde_json::Value::String(message));
+    }
+    if let Some(detail) = detail {
+        nested.insert("detail".to_owned(), detail);
+    }
+    value["error"] = serde_json::Value::Object(nested);
+}
+
+/// Wall-clock bound for one identity request. Shorter than the vendor's 60s: the
+/// estate is one hop away inside our own edge, and an identity call that hangs is a
+/// signed-out user staring at a spinner.
+const IDENTITY_REQUEST_TIMEOUT_SECS: u64 = 30;
+
 #[derive(Debug, Deserialize)]
 struct NostrIdentityChallenge {
     challenge_id: String,
@@ -466,13 +628,11 @@ async fn authenticated_json(
 #[tauri::command]
 pub(crate) async fn get_builderlab_nostr_identity(
     app_state: tauri::State<'_, crate::app_state::AppState>,
-    session: tauri::State<'_, BuilderlabSession>,
 ) -> Result<serde_json::Value, String> {
-    authenticated_json(
-        &app_state.http_client,
-        &session,
+    nip98_identity_json(
+        &app_state,
         reqwest::Method::POST,
-        "/v1/buzz/nostr-identities/current",
+        IDENTITY_CURRENT_PATH,
         serde_json::json!({}),
     )
     .await
@@ -481,14 +641,13 @@ pub(crate) async fn get_builderlab_nostr_identity(
 #[tauri::command]
 pub(crate) async fn bind_builderlab_nostr_identity(
     app_state: tauri::State<'_, crate::app_state::AppState>,
-    session: tauri::State<'_, BuilderlabSession>,
 ) -> Result<serde_json::Value, String> {
-    let challenge_value = authenticated_json(
-        &app_state.http_client,
-        &session,
+    let base = crate::relay::relay_api_base_url_with_override(&app_state);
+    let challenge_value = nip98_identity_json(
+        &app_state,
         reqwest::Method::POST,
-        "/v1/buzz/nostr-identities/challenge",
-        serde_json::json!({ "origin": BUILDERLAB_ORIGIN }),
+        IDENTITY_CHALLENGE_PATH,
+        serde_json::json!({ "origin": estate_identity_origin(&base)? }),
     )
     .await?;
     // A structured error here (e.g. missing_mapping) arrives as an object with an
@@ -509,11 +668,10 @@ pub(crate) async fn bind_builderlab_nostr_identity(
         &challenge.origin,
         &challenge.expires_at,
     )?;
-    authenticated_json(
-        &app_state.http_client,
-        &session,
+    nip98_identity_json(
+        &app_state,
         reqwest::Method::POST,
-        "/v1/buzz/nostr-identities/verify",
+        IDENTITY_VERIFY_PATH,
         serde_json::json!({
             "challenge_id": challenge.challenge_id,
             "nonce": challenge.nonce,
@@ -523,16 +681,17 @@ pub(crate) async fn bind_builderlab_nostr_identity(
     .await
 }
 
+/// Unbind the caller's identity. OWNER-CLASS: this is the operation ruling A says
+/// must never be reachable with a vendor session credential, and it is NIP-98 only
+/// from day one. There is no fallback parameter and no legacy branch.
 #[tauri::command]
 pub(crate) async fn delete_builderlab_nostr_identity(
     app_state: tauri::State<'_, crate::app_state::AppState>,
-    session: tauri::State<'_, BuilderlabSession>,
 ) -> Result<serde_json::Value, String> {
-    authenticated_json(
-        &app_state.http_client,
-        &session,
+    nip98_identity_json(
+        &app_state,
         reqwest::Method::POST,
-        "/v1/buzz/nostr-identities/delete",
+        IDENTITY_DELETE_PATH,
         serde_json::json!({}),
     )
     .await
@@ -643,6 +802,8 @@ pub(crate) async fn transfer_builderlab_community(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn auth_complete_page_uses_buzz_brand() {
@@ -683,5 +844,138 @@ mod tests {
             Some("http://127.0.0.1:1234/callback/nonce")
         );
         assert!(!query.contains_key("screen_hint"));
+    }
+
+    // ── ruling A: the identity credential class is NIP-98 ──────────────────────
+
+    #[test]
+    fn identity_paths_stay_on_the_estate_origin_never_the_vendor_host() {
+        // The repoint as a property: whatever estate base is configured, the identity
+        // family resolves on THAT base, and never on the retired vendor host.
+        for base in [
+            "https://agents.vclawhub.com",
+            "https://agents.vclawhub.com/",
+        ] {
+            for path in [
+                IDENTITY_CURRENT_PATH,
+                IDENTITY_CHALLENGE_PATH,
+                IDENTITY_VERIFY_PATH,
+                IDENTITY_DELETE_PATH,
+            ] {
+                let url = identity_url_from_base(base, path).expect("identity url");
+                assert_eq!(url.host_str(), Some("agents.vclawhub.com"), "base {base}");
+                assert_eq!(url.path(), path);
+                assert_ne!(url.host_str(), Some("app.builderlab.xyz"));
+                assert_eq!(
+                    url.origin().ascii_serialization(),
+                    "https://agents.vclawhub.com"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn estate_identity_origin_is_scheme_and_host_with_no_path() {
+        // The estate's challenge refuses an origin with a path or query
+        // (vgate/internal/buzzid/challenge.go ValidateOrigin), so the origin the app
+        // ASKS for must be path-free by construction rather than by luck.
+        let url = identity_url_from_base("https://agents.vclawhub.com", "/").expect("origin url");
+        assert_eq!(
+            url.origin().ascii_serialization(),
+            "https://agents.vclawhub.com"
+        );
+        assert_eq!(url.path(), "/");
+    }
+
+    #[test]
+    fn identity_requests_are_nip98_signed_and_never_carry_the_vendor_session_header() {
+        // The credential class, checked against the BYTES on the wire: the header is
+        // `Authorization: Nostr <base64(event)>`, the event is kind 27235, and its tags
+        // bind this request (u/method/payload) — the same header builder POST /query and
+        // POST /events use, which is what makes the app's identity credential the
+        // estate's Schnorr credential rather than a vendor token.
+        let keys = nostr::Keys::generate();
+        let url = identity_url_from_base("https://agents.vclawhub.com", IDENTITY_CURRENT_PATH)
+            .expect("identity url");
+        let body = b"{}";
+        let header = crate::relay::build_nip98_auth_header_for_keys(
+            &keys,
+            &reqwest::Method::POST,
+            url.as_str(),
+            body,
+        )
+        .expect("nip98 header");
+
+        assert!(header.starts_with("Nostr "), "header was {header}");
+        assert!(
+            !header.contains(BB_SESSION_CREDENTIAL_HEADER),
+            "an identity request must not carry the retired vendor session credential"
+        );
+
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(header.trim_start_matches("Nostr ").trim())
+            .expect("base64 event");
+        let event: serde_json::Value = serde_json::from_slice(&raw).expect("event json");
+        assert_eq!(event["kind"], 27235);
+        assert_eq!(
+            event["pubkey"].as_str(),
+            Some(keys.public_key().to_hex().as_str())
+        );
+
+        let tags = event["tags"].as_array().expect("tags");
+        let has = |name: &str, value: &str| {
+            tags.iter().any(|tag| {
+                tag.as_array()
+                    .map(|pair| pair.len() == 2 && pair[0] == name && pair[1] == value)
+                    .unwrap_or(false)
+            })
+        };
+        assert!(
+            has("u", url.as_str()),
+            "u tag must bind the identity URL: {tags:?}"
+        );
+        assert!(has("method", "POST"));
+        let payload = Sha256::digest(body);
+        assert!(has("payload", &hex::encode(payload)));
+    }
+
+    #[test]
+    fn estate_error_envelope_is_reshaped_into_the_shape_the_ui_reads() {
+        // vgate answers `{error: "<code>", message, detail}`; the UI reads `error.code`.
+        // Measured consequence of NOT reshaping: `hostedCommunityErrorMessage` finds no
+        // `code` and no `message` on a string, and returns its generic fallback — a
+        // `restricted:` refusal becomes "Could not load the connected Buzz identity."
+        let mut value = serde_json::json!({
+            "error": "auth_required",
+            "message": "restricted: auth event expired (created_at outside freshness window)",
+            "detail": { "pubkey": "ab" }
+        });
+        normalize_identity_error(&mut value);
+        assert_eq!(value["error"]["code"], "auth_required");
+        assert_eq!(
+            value["error"]["message"],
+            "restricted: auth event expired (created_at outside freshness window)"
+        );
+        assert_eq!(value["error"]["detail"]["pubkey"], "ab");
+        assert!(
+            value["error"].is_object(),
+            "error must no longer be a bare string: {value}"
+        );
+    }
+
+    #[test]
+    fn a_non_flat_error_envelope_is_left_exactly_as_it_arrived() {
+        // This function translates ONE known shape. It must not guess at another: an
+        // already-nested body (the vendor's, or a future server's) and a body with no
+        // `error` at all both pass through byte-identical.
+        let nested = serde_json::json!({ "error": { "code": "taken" }, "correlation_id": "c1" });
+        let mut value = nested.clone();
+        normalize_identity_error(&mut value);
+        assert_eq!(value, nested);
+
+        let bare = serde_json::json!({ "message": "no error field here" });
+        let mut value = bare.clone();
+        normalize_identity_error(&mut value);
+        assert_eq!(value, bare);
     }
 }

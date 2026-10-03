@@ -21,23 +21,34 @@ test("normal first launch uses the already-persisted identity", async ({
   // Landing carries a subtle dot-grid pattern over the chartreuse fill.
   await expect(gate).toHaveCSS("background-image", /radial-gradient/);
   await expect(gate).toHaveCSS("color", "rgb(23, 23, 23)");
+
+  // ── THE ONE FORWARD CONTROL, AND THE TWO THE GATE WITHDREW ────────────────────────────────────
+  // This test used to pin the pill of "Create a new identity key" and then click it, and "Create my
+  // private key", to reach the "Your private identity key" heading. Operator directive 2026-10-03
+  // ("VClaw sign-in is the DEFAULT and THE ONLY method") withdrew that chain: the gate is
+  // `VCLAW_SIGN_IN_ONLY = true` in src/features/onboarding/ui/MachineOnboardingFlow.tsx, which stops
+  // `identity-key-intro`, `identity-key-help`, `key-import` and `backup` from RENDERING and refuses
+  // NAVIGATION to them as a way to sign in. The primary pill on this screen is therefore the estate
+  // sign-in, and the withdrawn chain is asserted ABSENT rather than walked — a stronger statement
+  // than the clicks made, because it fails if the gate is re-opened without this file following.
+  // The gate's INNER-page chrome (the dot grid over the chartreuse -> light-blue gradient) is no
+  // longer observable from this fixture, because the landing reaches no inner page; it is asserted
+  // instead in onboarding-docked-cta-screenshots.spec.ts ("machine setup and config: docked CTAs"),
+  // on the setup step the app's own re-entry reaches.
+  const signIn = page.getByRole("button", { name: "Login with VClaw" });
+  await expect(signIn).toBeVisible();
+  await expect(signIn).toHaveCSS("background-color", "rgb(23, 23, 23)");
   await expect(
     page.getByRole("button", { name: "Create a new identity key" }),
-  ).toHaveCSS("background-color", "rgb(23, 23, 23)");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
-  await page.getByRole("button", { name: "Create my private key" }).click();
-
+  ).toHaveCount(0);
   await expect(
-    page.getByRole("heading", {
-      name: "Your private identity key",
-    }),
-  ).toBeVisible();
-  // Non-landing pages layer the dot grid over the chartreuse→light-blue gradient.
-  await expect(gate).toHaveCSS(
-    "background-image",
-    /radial-gradient\(.*\), linear-gradient\(.*rgb\(215, 215, 46\).*rgb\(215, 231, 246\)\)/s,
-  );
-  await expect(gate).toHaveCSS("color", "rgb(23, 23, 23)");
+    page.getByRole("button", { name: "Use an existing key" }),
+  ).toHaveCount(0);
+  await expect(page.getByTestId("onboarding-page-key-intro")).toHaveCount(0);
+  await expect(page.getByTestId("onboarding-page-backup")).toHaveCount(0);
+
+  // WHAT THE TEST IS ACTUALLY FOR, and it holds without a single click: the app resolved the
+  // STARTUP identity from the already-persisted key, and did not mint or persist a new one.
   const commands = await page.evaluate(
     () =>
       (

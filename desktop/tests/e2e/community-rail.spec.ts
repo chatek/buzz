@@ -1136,6 +1136,26 @@ test.describe("community rail", () => {
     context,
     page,
   }) => {
+    // ── WHY THIS TEST READS THE GATED WELCOME SCREEN, NOT THE COMMUNITY PICKER ────────────────────
+    // DIRECTIVE (operator, "one door", 2026-10-03 — the W2 login-overhaul checks,
+    //   `.prime/handoff/agents-sprint/e2e/W2-LOGIN-OVERHAUL-CHECKS.md`): "The picker or the vendor
+    //   paths reachable by any route (a card, a resumed page, a future caller), even if not rendered"
+    //   is a build FAILURE, and the hidden methods must stay HIDDEN rather than deleted, behind ONE
+    //   named flip constant. So "the picker is on screen" is no longer a state this app has.
+    // GATE: `VCLAW_SPRINT_1_PICKER_HIDDEN = true` in
+    //   `src/features/communities/ui/WelcomeSetup.tsx` — one constant, read by the initial-page
+    //   normaliser and by the `showPage` choke point, which refuse the hidden pages
+    //   {join, existing, owned, member}. It also selects the copy: while the gate is on, the welcome
+    //   page's heading is "Sign in to join the estate community" and its ONE forward action is the
+    //   estate sign-in (`welcome-vclaw-sign-in`, the same `VclawOrgField` the entry screen renders) —
+    //   measured from this test's own failure, whose ARIA snapshot shows exactly that screen.
+    // SO: the two picker assertions are RE-POINTED at the gated screen, and are replaced by a STRONGER
+    //   pair rather than dropped — the picker is asserted ABSENT (not merely out of view) and its
+    //   replacement is asserted PRESENT AND USABLE. Every identity/state assertion is byte-identical.
+    // WHEN THE GATE OPENS (set the constant false): revert the two heading assertions and the CTA
+    //   assertion to the picker's own copy and `community-choice-join`, and invert the `toHaveCount(0)`
+    //   pair. No coverage is deleted here, so nothing has to be re-derived.
+
     await installMockBridge(page, undefined, {
       autoConnectDefaultRelay: true,
       skipCommunitySeed: true,
@@ -1158,9 +1178,22 @@ test.describe("community rail", () => {
       .getByRole("menuitem", { name: "Leave community" })
       .click();
 
-    await expect(page.getByText("Join or create a community")).toBeVisible();
+    // The gated welcome screen: the SPRINT-1 heading, not the picker's "Join or create a community".
+    await expect(
+      page.getByRole("heading", {
+        name: "Sign in to join the estate community",
+        exact: true,
+      }),
+    ).toBeVisible();
     await expect(page.getByTestId("welcome-setup-back")).toHaveCount(0);
-    await expect(page.getByTestId("community-choice-join")).toBeVisible();
+    // The picker is GATED — asserted as ABSENT, which is stronger than not asserting it: the join
+    // card is in no part of the DOM, and neither the picker's copy…
+    await expect(page.getByTestId("community-choice-join")).toHaveCount(0);
+    await expect(page.getByText("Join or create a community")).toHaveCount(0);
+    // …nor is the screen a dead end, which is what a present-but-frozen screen would be: the action
+    // that replaces the picker is on screen AND usable (the org field's CTA gates on a valid entry).
+    await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeVisible();
+    await expect(page.getByTestId("welcome-vclaw-sign-in")).toBeEnabled();
     await expect
       .poll(() =>
         page.evaluate(() => window.localStorage.getItem("buzz-communities")),
@@ -1181,7 +1214,10 @@ test.describe("community rail", () => {
     });
     await relaunchPage.goto("/");
     await expect(
-      relaunchPage.getByText("Join or create a community"),
+      relaunchPage.getByRole("heading", {
+        name: "Sign in to join the estate community",
+        exact: true,
+      }),
     ).toBeVisible();
     await expect(relaunchPage.getByTestId("welcome-setup-back")).toHaveCount(0);
     await expect
@@ -1508,6 +1544,21 @@ test.describe("community rail", () => {
         }),
       );
     }, `community-rail-button-${COMMUNITY_B.id}`);
+    // THE PICK-UP MUST BE COMMITTED BEFORE THE NEXT KEY. This Space is handled by React, and dnd-kit
+    // activates its keyboard sensor from it and attaches that sensor's own listener in the commit
+    // that follows. A key delivered before that commit is LOST, and the gesture then ends with the
+    // drop committing a no-op reorder — storage unchanged, no error, which is what the failure this
+    // wait fixes looked like. `aria-pressed="true"` is dnd-kit's own attribute on the ACTIVE
+    // activator (`attributes` from `useSortable`), so it is the pick-up, rendered.
+    //
+    // MEASURED 2026-10-03 on the working tree — the A-only A/B that reported this failure was ONE
+    // sample, and this lane changed no product code, so this is a timing-sensitive test rather than
+    // a regression:
+    //   as shipped, isolated `--repeat-each=10` -> 9 pass / 1 fail, and 1 file-run of 2 failed;
+    //   probe: pick-up wait, no post-ArrowUp wait -> 16/16 reordered;
+    //   probe: no pick-up wait, 500 ms after ArrowUp -> 12/16 reordered (the same failure mode).
+    // The assertion at the end is UNCHANGED: this only stops the test sending the next key early.
+    await expect(buttonB).toHaveAttribute("aria-pressed", "true");
     // ArrowUp moves the active item one slot up.
     await page.keyboard.press("ArrowUp");
     // Space drops the item — same synthetic dispatch for consistency.
