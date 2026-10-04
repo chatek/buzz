@@ -367,7 +367,7 @@ export function MachineOnboardingFlow({
   const returnToApiConfig = React.useCallback(() => {
     setIsChoosingDifferentHarness(false);
     showPage("config", "backward");
-  }, []);
+  }, [showPage]);
 
   const loadFreshIdentity = React.useCallback(async () => {
     setIsPending(true);
@@ -388,7 +388,7 @@ export function MachineOnboardingFlow({
     } finally {
       setIsPending(false);
     }
-  }, [queryClient]);
+  }, [queryClient, showPage]);
 
   const loadRecoveredIdentity = React.useCallback(async () => {
     setIsPending(true);
@@ -408,7 +408,7 @@ export function MachineOnboardingFlow({
     } finally {
       setIsPending(false);
     }
-  }, [continueWithRecoveredIdentity, queryClient]);
+  }, [continueWithRecoveredIdentity, queryClient, showPage]);
 
   const replaceLostIdentity = React.useCallback(async () => {
     const confirmed = window.confirm(
@@ -434,7 +434,7 @@ export function MachineOnboardingFlow({
     } finally {
       setIsPending(false);
     }
-  }, [queryClient]);
+  }, [queryClient, showPage]);
 
   const importExistingIdentity = React.useCallback(
     async (nsec: string, password?: string) => {
@@ -445,7 +445,7 @@ export function MachineOnboardingFlow({
       setSelectedPubkey(identity.pubkey);
       showPage("setup", "forward");
     },
-    [continueWithIdentity, queryClient],
+    [continueWithIdentity, queryClient, showPage],
   );
 
   const backFromKeyImport = React.useCallback(() => {
@@ -460,7 +460,7 @@ export function MachineOnboardingFlow({
       return;
     }
     showPage("identity", "backward");
-  }, [keyImportDialog, keyImportStage]);
+  }, [keyImportDialog, keyImportStage, showPage]);
 
   const returnToCreatedKey = React.useCallback(() => {
     setBackupDirection("backward");
@@ -488,7 +488,7 @@ export function MachineOnboardingFlow({
     setBackupDirection("backward");
     setReturningFromSecurity(false);
     showPage("backup", "backward");
-  }, [backupSession, backupSubview, identityWasImported]);
+  }, [backupSession, backupSubview, identityWasImported, showPage]);
 
   const backFromConfig = React.useCallback(() => {
     setupSelectionHandoffRef.current = false;
@@ -497,7 +497,7 @@ export function MachineOnboardingFlow({
       setHarnessConnectionMethod(null);
     }
     showPage("setup", "backward");
-  }, [configBackTarget]);
+  }, [configBackTarget, showPage]);
 
   const chromeBackAction =
     page === "identity-key-help"

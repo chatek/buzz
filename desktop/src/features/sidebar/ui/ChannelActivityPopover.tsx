@@ -381,12 +381,14 @@ export function ChannelActivityPopover({
     [clearUnreadOverride, markMessageRead, markThreadRead],
   );
 
-  if (!hasContent) {
-    return children;
-  }
-
+  // The wrapper is rendered even while there is nothing to show: the row's
+  // button must keep the same React parent — and therefore the same DOM node —
+  // when the row gains or loses activity content. A re-parent that lands
+  // between mousedown and mouseup re-creates the button, and the browser then
+  // dispatches `click` at an ancestor with no handler, so the channel switch is
+  // silently lost. Radix only mounts the portalled content while `open`.
   return (
-    <Popover onOpenChange={setOpen} open={open}>
+    <Popover onOpenChange={setOpen} open={open && hasContent}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: hover/focus events bubble from the nested channel button while the wrapper keeps the preview interactive. */}
       <div
         className="w-full min-w-0"

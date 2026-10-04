@@ -22,7 +22,10 @@
 //! id below must be registered with `http://127.0.0.1/callback` and the client
 //! must send exactly that host and path.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -166,25 +169,50 @@ fn vclaw_config() -> PkceOAuthConfig {
     }
 }
 
-/// Build a token source for the vclaw IDP bound to this app's browser opener.
+/// THE ONE vclaw SIGN-IN ENGINE for this process. This cell is a CORRECTNESS requirement, not an
+/// optimisation, and removing it re-breaks device binding.
 ///
-/// Cheap and stateless on the desktop side: the engine reads/writes its own
-/// on-disk cache and serializes concurrent callers, so no session state is
-/// parked in `AppState`. The cache is keyed by
-/// `sha256(discovery_url|client_id|scopes)`, so a scope change signs everyone
-/// out once — which is the intended behavior, not a bug to work around.
+/// ⚠ WHY IT EXISTS — MEASURED 2026-10-04, from a live user report. `vclaw_oidc_login` and
+/// `vclaw_principal_bind` each called this function, and it built a NEW `PkceOAuthTokenSource` every
+/// time. The OIDC `id_token` lives in a **MEMORY-ONLY** field of that engine and is deliberately
+/// never written to the on-disk cache (see `buzz_agent_pkg::auth`). So the interactive sign-in
+/// populated instance A, the bind read instance B whose holder is `None` on construction, and the
+/// bind answered `idp_unreachable` / `no_id_token` — while the user was in fact signed in, with a
+/// valid unexpired access token on disk and `"result":"ok"` in the engine's own attempt sidecar.
+///
+/// The user-visible effect was a bind gate that said "you are not signed in on this device" no
+/// matter how many times they signed in, because the credential was discarded between two commands
+/// of the same running app.
+///
+/// The ACCESS token does not need this — it is cached on disk and keyed by
+/// `sha256(discovery_url|client_id|scopes)`. The `id_token` does, and the `id_token` is the
+/// credential the bind's whole contract rests on. The cache key still means a scope change signs
+/// everyone out once, exactly as documented; that is unaffected by this change.
+static VCLAW_ENGINE: OnceLock<Arc<PkceOAuthTokenSource>> = OnceLock::new();
+
+/// Build (once) and return the vclaw token source bound to this app's browser opener.
 pub(crate) fn vclaw_source(app: AppHandle) -> Result<Arc<PkceOAuthTokenSource>, String> {
+    if let Some(existing) = VCLAW_ENGINE.get() {
+        return Ok(existing.clone());
+    }
     let loopback = PkceLoopbackConfig::new(
         VCLAW_REDIRECT_HOST,
         VCLAW_REDIRECT_PATH,
         VCLAW_PROMPT_TIMEOUT,
     );
-    PkceOAuthTokenSource::new_with_loopback(
+    let engine = PkceOAuthTokenSource::new_with_loopback(
         vclaw_config(),
         Arc::new(TauriBrowserOpener { app }),
         loopback,
     )
-    .map_err(|error| format!("could not prepare vclaw sign-in: {error}"))
+    .map_err(|error| format!("could not prepare vclaw sign-in: {error}"))?;
+    // `set` can lose a race to another caller; if it does, the winner is the one true engine and we
+    // hand that back rather than a second instance that would reintroduce the split above.
+    let _ = VCLAW_ENGINE.set(engine);
+    VCLAW_ENGINE
+        .get()
+        .cloned()
+        .ok_or_else(|| "could not prepare vclaw sign-in: engine not initialised".to_owned())
 }
 
 /// Ask the IdP which account an access token belongs to.

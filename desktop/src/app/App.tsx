@@ -721,7 +721,7 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
       reloadFromStorage();
       machine.complete(pubkey);
     },
-    [machine.complete],
+    [machine.complete, reloadFromStorage],
   );
 
   const openAddCommunity = useCallback(

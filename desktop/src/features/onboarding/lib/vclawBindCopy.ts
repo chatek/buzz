@@ -62,11 +62,23 @@ const COPY: Record<VclawBindState, VclawBindCopy> = {
     entersApp: false,
   },
   "idp-unreachable": {
-    title: "We could not reach the sign-in service",
+    // ⚠ THE TITLE USED TO SAY "We could not reach the sign-in service", AND THAT WAS WRONG.
+    // Measured 2026-10-03, on a live attempt: the IdP was reachable throughout - discovery answered
+    // 200, the authorization endpoint answered 302 straight to the portal with workflow=openid_connect,
+    // and the token endpoint answered on POST. The bind reports this state from TWO causes, and BOTH
+    // are credential-class, not transport-class (`vclaw_principal_bind.rs`):
+    //   · `no_token`     - the silent session acquisition found NO SESSION. The app is not signed in.
+    //   · `no_id_token`  - a session exists but the MEMORY-ONLY id_token holder is empty and the
+    //                      refresh recovery could not refill it.
+    // Calling that "we could not reach the sign-in service" sends the reader to their network, which
+    // is the one place the fault is not.
+    title: "You are not signed in on this device",
     body:
-      "The app could not get a valid sign-in token, so it did not try to bind this device and " +
-      "nothing has loaded. Check your connection, then try again.",
-    retryLabel: "Try again",
+      "The app has no usable sign-in credential, so it did not try to bind this device and nothing " +
+      "has loaded. This is not an empty account, and it is not a network fault. Sign in again to " +
+      "continue. A new build can also land here on its own: the token cache is keyed by the " +
+      "requested scopes, so adding a scope signs you out once.",
+    retryLabel: "Sign in again",
     entersApp: false,
   },
   "service-unreachable": {

@@ -817,10 +817,22 @@ impl PkceOAuthTokenSource {
     /// mistaken for a credential decision (it would otherwise pop a browser or
     /// return `RefreshRejected` when nothing was actually rejected).
     async fn refresh(&self, endpoints: &OidcEndpoints, refresh_token: &str) -> RefreshOutcome {
+        // ⚠ `scope` IS SENT EXPLICITLY, AND ITS ABSENCE WAS A LIVE CONTROL-SURFACE OUTAGE.
+        //
+        // MEASURED 2026-10-04, from a user report: the user signed in successfully and was then
+        // told "you are not signed in on this device" forever, because the bind's id_token was
+        // empty and the recovery below could never refill it. OIDC (RFC 6749 §6) says a refresh
+        // that OMITS `scope` is treated as requesting the ORIGINALLY GRANTED scope — but this IdP
+        // does not re-issue an `id_token` unless `openid` is asked for on the refresh itself, so
+        // the reply carried no `id_token` and site A below duly stored nothing. Requesting the
+        // original scope set is exactly what the spec permits (`MUST NOT include any scope not
+        // originally granted`) and it removes the dependence on the provider's defaulting.
+        let scope_param = self.cfg.scopes.join(" ");
         let params = [
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
             ("client_id", &self.cfg.client_id),
+            ("scope", &scope_param),
         ];
         let resp = match self
             .http
@@ -870,10 +882,18 @@ impl PkceOAuthTokenSource {
         // Site A of 2: a refresh granted with `openid` in scope returns a FRESH
         // id_token, so the memory-only holder must be updated here as well — if
         // this line is ever removed the app loses control at the first refresh.
-        *self.id_token.lock().await = v
-            .get("id_token")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        //
+        // ⚠ ONLY OVERWRITE WHEN THE RESPONSE ACTUALLY CARRIES ONE — MEASURED 2026-10-04.
+        // This line used to assign UNCONDITIONALLY, so a refresh reply without an `id_token`
+        // (exactly what the un-scoped request above produced) set the holder to `None` and
+        // DESTROYED a credential the browser grant had just stored. That turns a re-mintable
+        // cache into a permanently empty holder: the user is told to sign in again, does, and
+        // the next refresh wipes it again. A response that omits a field is NOT a statement that
+        // the field is gone — the same hazard `token_from_response`'s `refresh_token` fallback
+        // already guards, and it must not be handled in one place and not the other.
+        if let Some(fresh) = v.get("id_token").and_then(Value::as_str) {
+            *self.id_token.lock().await = Some(fresh.to_string());
+        }
         match token_from_response(&v, Some(refresh_token)) {
             Ok(token) => RefreshOutcome::Refreshed(token),
             Err(e) => {

@@ -30,12 +30,31 @@ else
 fi
 
 missing=()
+toosmall=()
 for bin in "${SIDECARS[@]}"; do
-    [[ -f "$SRC_DIR/${bin}${EXE}" ]] || missing+=("${bin}${EXE}")
+    src="$SRC_DIR/${bin}${EXE}"
+    if [[ ! -f "$src" ]]; then
+        missing+=("${bin}${EXE}")
+        continue
+    fi
+    # AN EXISTENCE CHECK IS NOT ENOUGH. Measured 2026-10-03: six 0-byte sources passed this script with
+    # exit 0 and were copied into the bundle with mode 755 - the exact shape the app accepts as a real
+    # command - so the shipped DMG carried six empty sidecars. 1000000 B is the same floor
+    # deploy/buzz/rollback/rollback-artefact-check.sh applies to a shipped binary.
+    size=$(wc -c <"$src" | tr -d ' ')
+    if [[ "$size" -lt 1000000 ]]; then
+        toosmall+=("${bin}${EXE}=${size}B")
+    fi
 done
 if [[ ${#missing[@]} -gt 0 ]]; then
     echo "Error: missing release binaries in $SRC_DIR: ${missing[*]}" >&2
     echo "Run '$BUILD_HINT' first." >&2
+    exit 1
+fi
+if [[ ${#toosmall[@]} -gt 0 ]]; then
+    echo "Error: release binaries are too small to be real (floor 1000000 B): ${toosmall[*]}" >&2
+    echo "A 0-byte or truncated sidecar copied into the bundle is accepted as a real command, and the" >&2
+    echo "resulting app cannot spawn agents. Rebuild with '$BUILD_HINT' and check for a stale target dir." >&2
     exit 1
 fi
 

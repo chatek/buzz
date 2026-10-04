@@ -114,7 +114,9 @@ globalThis.__TAURI_INTERNALS__ = {
         // BEFORE the first authorised request. The first thing that could make such a request is the
         // app mounting, and the last thing this sequence does before that is provision the estate
         // community — so the storage state at THIS instant is what proves the ordering.
-        communitiesAtBind.push(dom.window.localStorage.getItem("buzz-communities"));
+        communitiesAtBind.push(
+          dom.window.localStorage.getItem("buzz-communities"),
+        );
         const answer = nextBindAnswer();
         return answer instanceof Error
           ? Promise.reject(answer)
@@ -128,7 +130,12 @@ globalThis.__TAURI_INTERNALS__ = {
 };
 dom.window.__TAURI_INTERNALS__ = globalThis.__TAURI_INTERNALS__;
 
-let React, act, createRoot, QueryClient, QueryClientProvider, MachineOnboardingFlow;
+let React,
+  act,
+  createRoot,
+  QueryClient,
+  QueryClientProvider,
+  MachineOnboardingFlow;
 let mountedRoots = [];
 
 before(async () => {
@@ -274,7 +281,10 @@ describe("A2/T6 - a bind that does not succeed never mounts an empty app", () =>
     const notice = bindNotice(container);
     assert.ok(notice, "the failure must be visible, not silent");
     assert.equal(notice.getAttribute("data-state"), "service-unreachable");
-    assert.equal(notice.getAttribute("data-reason"), "bind_endpoint_unreachable");
+    assert.equal(
+      notice.getAttribute("data-reason"),
+      "bind_endpoint_unreachable",
+    );
     assert.match(notice.textContent ?? "", /unreachable/i);
     // THE POINT OF THE JOB: `complete` is what mounts the app, and it must NOT have been called.
     assert.deepEqual(
@@ -305,7 +315,10 @@ describe("A2/T6 - a bind that does not succeed never mounts an empty app", () =>
 
 describe("A4 - the failure states are distinct", () => {
   const CASES = [
-    [{ outcome: "refused", reason: "proof_replayed", status: 401 }, "not-bound"],
+    [
+      { outcome: "refused", reason: "proof_replayed", status: 401 },
+      "not-bound",
+    ],
     [{ outcome: "revoked", reason: "device_revoked", status: 401 }, "revoked"],
     [{ outcome: "idp_unreachable" }, "idp-unreachable"],
     [{ outcome: "service_unreachable" }, "service-unreachable"],
@@ -339,7 +352,9 @@ describe("A4 - the failure states are distinct", () => {
   });
 
   it("does not blame the IdP for a refusal the account service made", async () => {
-    bindAnswers = [{ outcome: "refused", reason: "proof_replayed", status: 401 }];
+    bindAnswers = [
+      { outcome: "refused", reason: "proof_replayed", status: 401 },
+    ];
     const container = await mount();
     await signIn(container);
     const text = container.textContent ?? "";

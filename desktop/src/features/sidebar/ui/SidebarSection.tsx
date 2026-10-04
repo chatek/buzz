@@ -362,10 +362,11 @@ export function ChannelMenuButton({
     </SidebarMenuButton>
   );
 
-  if (!activeWorking && !hasThreadUnread) {
-    return button;
-  }
-
+  // Always wrapped, even when the row has nothing to preview: React keeps the
+  // button's position (and DOM node) stable across activity flips, so a flip
+  // that lands between mousedown and mouseup can no longer re-create the click
+  // target and swallow the channel switch. ChannelActivityPopover mounts its
+  // portalled content only while it actually has something to show.
   return (
     <ChannelActivityPopover activeWorking={activeWorking} channel={channel}>
       {button}
