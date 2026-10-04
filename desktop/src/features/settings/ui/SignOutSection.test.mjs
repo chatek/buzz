@@ -11,8 +11,11 @@
  * The gates, in the unit suite (Tauri IPC faked at `__TAURI_INTERNALS__`):
  *   (1) `Sign out` clears the vclaw session — the command reports a token existed
  *       and a later session probe finds none — while the identity key is STILL
- *       PRESENT and local data is untouched. Both halves are asserted, because the
- *       difference between the two buttons IS the assertion.
+ *       PRESENT. **AND IT LEAVES THE COMMUNITIES** (operator request, 2026-10-04:
+ *       *"I clicked 'Signout' but it shall also mean 'Leave community' or leave any
+ *       logged in communities"*). The identity half is asserted because the
+ *       difference between the two buttons IS the assertion; the community half is
+ *       asserted because a sign-out that leaves you in the rooms is not a sign-out.
  *   (2) the destructive flow is unchanged: `Delete my data` still wipes and calls
  *       `sign_out`, and never the vclaw command. A control, not a re-test.
  *   (3) the copy no longer promises a sign-out it does not offer, and the
@@ -134,8 +137,16 @@ const IDENTITY = {
   storage: "system-keyring",
 };
 const SIGNOUT_CONFIRM_PHRASE = "wipe all my data";
-/** A local-data sentinel: a sign-out must leave it exactly as it was. */
-const LOCAL_DATA_KEY = "buzz-communities";
+/**
+ * The COMMUNITY LIST, and its key is the REAL one (`communityStorage.ts` `COMMUNITIES_KEY`).
+ *
+ * ⚠ IT USED TO BE A NEUTRAL "local-data sentinel" ASSERTED TO SURVIVE A SIGN-OUT. That pinned the
+ * behaviour the operator asked to change on 2026-10-04 - so the fixture is now named for what it is,
+ * and assertion (1) requires it to be CLEARED. **A sentinel chosen so a test can say "unchanged" is
+ * only neutral while nobody asks for it to change.**
+ */
+const COMMUNITIES_KEY = "buzz-communities";
+const LOCAL_DATA_KEY = COMMUNITIES_KEY;
 const LOCAL_DATA_VALUE = '[{"id":"e2e-community"}]';
 
 /**
@@ -227,8 +238,20 @@ async function render(Component) {
   document.body.appendChild(container);
   const root = createRoot(container);
   mountedRoots.push(root);
+  // ⚠ THE PROVIDER IS REQUIRED NOW, AND THAT IS THE CHANGE. `SignOutSection` reads the SHARED
+  // `CommunitiesContext` so that leaving a community on sign-out clears the same list the rest of the
+  // app renders from - not a second instance that would clear nothing anyone can see.
+  const { CommunitiesProvider } = await import(
+    "@/features/communities/useCommunities"
+  );
   await act(async () => {
-    root.render(React.createElement(Component));
+    root.render(
+      React.createElement(
+        CommunitiesProvider,
+        null,
+        React.createElement(Component),
+      ),
+    );
   });
   return container;
 }
@@ -300,15 +323,19 @@ function assertSignOutWasNonDestructive() {
     false,
     "the cached vclaw session must be gone",
   );
+  // ⚠ INVERTED 2026-10-04 BY OPERATOR REQUEST, AND THE OLD ASSERTION IS QUOTED BELOW IT.
+  // It used to read: `assert.equal(getItem(COMMUNITIES_KEY), LOCAL_DATA_VALUE, "local data must be
+  // untouched")` - which pinned the behaviour the operator asked to change. **A test asserting that a
+  // sign-out does NOT leave the community is a test that would revert the fix.**
   assert.equal(
-    dom.window.localStorage.getItem(LOCAL_DATA_KEY),
-    LOCAL_DATA_VALUE,
-    "local data must be untouched",
+    dom.window.localStorage.getItem(COMMUNITIES_KEY),
+    null,
+    "Sign out must LEAVE the communities: the community list is cleared",
   );
 }
 
 describe("Sign out is not Delete my data", () => {
-  it("(1) Sign out clears the vclaw session and leaves the identity key and local data intact", async () => {
+  it("(1) Sign out clears the vclaw session, LEAVES the communities, and keeps the identity key", async () => {
     vclawSessionLive = true;
     dom.window.localStorage.setItem(LOCAL_DATA_KEY, LOCAL_DATA_VALUE);
     const container = await render(

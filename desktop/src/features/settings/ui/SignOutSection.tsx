@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { NsecMaskedDisplay } from "@/features/onboarding/ui/NsecMaskedDisplay";
 import { getNsec, signOut } from "@/shared/api/tauriIdentity";
 import { vclawSignOut } from "@/shared/api/vclawOidc";
+import { useCommunities } from "@/features/communities/useCommunities";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -36,6 +37,25 @@ export const IDENTITY_UNTOUCHED_COPY =
   "Your identity key and local data are untouched.";
 
 /**
+ * ⚠ THE COMMUNITIES ARE LEFT, AND THAT IS A DELIBERATE CHANGE (operator request, 2026-10-04).
+ *
+ * The request, verbatim: *"I clicked 'Signout' but it shall also mean 'Leave community' or leave
+ * any logged in communities on VClawBuzz."*
+ *
+ * WHAT IT REPLACES: the paragraph above this section said *"the relay session and every local byte
+ * stay exactly where they are"* - so signing out left the device joined to every community it had
+ * joined. The session went; the memberships did not. **A sign-out that leaves you in the rooms is
+ * not a sign-out, and the next person to open the app found themselves back inside.**
+ *
+ * WHAT IS AND IS NOT CLEARED: the community LIST and its navigation state are cleared, so the app
+ * forgets which relays this device belonged to. The identity key, the keyring and the local database
+ * still stay - this is still the non-destructive action, and `Delete my data` remains the only
+ * destructive one. **Leaving a community is not destroying the identity that joined it.**
+ */
+export const COMMUNITIES_LEFT_COPY =
+  "This device has also left the community or communities it had joined.";
+
+/**
  * TWO actions, and they must never collapse into one again.
  *
  * ── WHAT WAS WRONG (operator question, 2026-10-03) ─────────────────────────────
@@ -48,9 +68,11 @@ export const IDENTITY_UNTOUCHED_COPY =
  *
  * Now there are two:
  *
- * 1. **Sign out** — non-destructive. Clears the cached vclaw session and asks the
- *    IdP to revoke the refresh token it issued (RFC 7009). The identity key, the
- *    keyring, the relay session and every local byte stay exactly where they are.
+ * 1. **Sign out** — non-destructive. Clears the cached vclaw session, asks the IdP
+ *    to revoke the refresh token it issued (RFC 7009), **and leaves the community or
+ *    communities this device had joined** (operator request, 2026-10-04 - see
+ *    `COMMUNITIES_LEFT_COPY`). The identity key, the keyring and the local database
+ *    stay exactly where they are; the MEMBERSHIPS do not.
  * 2. **Delete my data** — unchanged, and still the only destructive action here:
  *    key + all local data + relaunch into first-run setup, behind two explicit
  *    gates (a tested backup confirmation and the typed phrase).
@@ -66,6 +88,10 @@ export const IDENTITY_UNTOUCHED_COPY =
  * machine.
  */
 export function SignOutSection() {
+  // ⚠ THE SHARED CONTEXT, not a second instance: `useCommunities` reads `CommunitiesContext`, so
+  // clearing here clears the SAME list the rest of the app renders from.
+  const { clearCommunities } = useCommunities();
+
   // ── Non-destructive: the vclaw session ──────────────────────────────────────
   const [isVclawPending, setIsVclawPending] = React.useState(false);
 
@@ -138,7 +164,13 @@ export function SignOutSection() {
     setIsVclawPending(true);
     try {
       const report = await vclawSignOut();
-      const description = `${describeVclawSignOut(report)} ${IDENTITY_UNTOUCHED_COPY}`;
+      // ⚠ LEAVING THE COMMUNITIES IS PART OF SIGNING OUT (operator request, 2026-10-04):
+      // *"I clicked 'Signout' but it shall also mean 'Leave community' or leave any logged in
+      // communities on VClawBuzz."* Clearing AFTER the revocation attempt, so the IdP call still
+      // happens even if the local clear throws - a live refresh token must not survive because a
+      // list failed to empty.
+      clearCommunities();
+      const description = `${describeVclawSignOut(report)} ${IDENTITY_UNTOUCHED_COPY} ${COMMUNITIES_LEFT_COPY}`;
       if (isRevocationUnresolved(report)) {
         toast.warning("Signed out on this device — the IdP was not updated.", {
           description,
