@@ -390,8 +390,17 @@ export function ChannelActivityPopover({
   return (
     <Popover onOpenChange={setOpen} open={open && hasContent}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: hover/focus events bubble from the nested channel button while the wrapper keeps the preview interactive. */}
+      {/* ⚠ `contents`, NOT `w-full min-w-0`. The wrapper exists ONLY to keep the row's
+          React parent (and therefore the button's DOM node) stable across activity flips —
+          see the note above. But a wrapper that GENERATES A BOX is a layout participant, and
+          adding one to every row moved the sidebar's collapsed content gutter by 1px and
+          changed the row's hover colour: measured 2026-10-04 by the full e2e suite as
+          community-rail.spec.ts:1326 (`expectContentSurfaceHorizontalGutters(page, 9)`),
+          badge.spec.ts:169 (`toHaveColor` after hover), and both buzz-theme sidebar-gradient
+          screenshot tests. `display: contents` keeps the React parent stable and generates
+          NO box, so the DOM shape is unchanged from before the wrapper existed. */}
       <div
-        className="w-full min-w-0"
+        className="contents"
         onBlur={closeWithDelay}
         onContextMenu={() => setOpen(false)}
         onFocus={openImmediately}
