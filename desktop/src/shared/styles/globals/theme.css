@@ -486,11 +486,33 @@
  * Hovering them still activates the row's Tailwind `group-hover` treatment,
  * so cover the whole menu item to keep that sibling-hover path on the same
  * neutral surface instead of falling back to the legacy accent.
+ *
+ * ⚠ THE `>` HERE WAS A DIRECT-CHILD COMBINATOR, AND A WRAPPER WAS ADDED BETWEEN
+ * THE TWO ELEMENTS. ChannelMenuButton now always renders ChannelActivityPopover,
+ * which puts a <div> (and Radix's anchor) between the menu item and its button,
+ * so `menu-item > menu-button` STOPPED MATCHING and the hover surface fell back
+ * to white. MEASURED 2026-10-04 by the full e2e suite and bisected to one commit:
+ *     with the always-wrap:    6 failed / 66 passed   (buzz-theme-screenshots)
+ *     without it:             24 passed
+ * and the failure named the rule's own consequence:
+ *     getByTestId('dm-list')…[data-sidebar="menu-button"]
+ *     Expected "rgba(0, 0, 0, 0.04)"  Received "rgb(255, 255, 255)"
+ *
+ * THE FIX IS A DESCENDANT COMBINATOR, SCOPED BY THE SAME PATH PREFIX so it can
+ * only reach a button that is inside THIS menu item — it cannot leak to a nested
+ * menu, and it does not have to be re-derived if another wrapper appears.
+ * The `>` rule is kept: it is the tighter statement, it still holds for rows
+ * whose button is a direct child, and removing it would widen this rule need-
+ * lessly for every case that did not change.
  */
 :root[data-buzz-sidebar]
   [data-testid="app-sidebar"]
   :where([data-sidebar="menu-item"]:hover)
-  > [data-sidebar="menu-button"]:not([data-active="true"]) {
+  > [data-sidebar="menu-button"]:not([data-active="true"]),
+:root[data-buzz-sidebar]
+  [data-testid="app-sidebar"]
+  :where([data-sidebar="menu-item"]:hover)
+  [data-sidebar="menu-button"]:not([data-active="true"]) {
   background-color: var(--buzz-hover-surface);
 }
 
