@@ -369,3 +369,166 @@ pub async fn vclaw_oidc_sign_out(
     )
     .await)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⚠ THIS FILE HELD **ZERO** TESTS UNTIL 2026-10-06, WHILE ITS SIBLINGS HELD 22 BETWEEN THEM
+    /// (`vclaw_principal_bind.rs`: 16, `vclaw_sign_out.rs`: 6). **AND THE TWO COMMANDS THAT LIVE HERE —
+    /// `vclaw_oidc_login` (:265) and `vclaw_oidc_session` (:283) — ARE THE TWO THAT *ESTABLISH THE IDP SESSION*,
+    /// the part of the integration a reviewer would most want covered.** MEASURED, not assumed: the desktop e2e
+    /// specs that exercise them (`vclaw-signin-only`, `onboarding`) **STUB** the Tauri command, so what they prove
+    /// is the UI's CONTRACT, not this file's behaviour.
+    ///
+    /// The tests below cover the PURE surface — the three functions that take no `AppHandle` and touch no network.
+    /// The interactive login itself cannot be unit-tested here; these tests hold down the CONFIGURATION CONTRACT
+    /// it is built from, which is the part that fails silently when it drifts.
+
+    // ---------------------------------------------------------------- vclaw_config / cache key AGREE
+    //
+    // ★ THE INVARIANT WORTH PINNING IS A CROSS-CHECK, NOT A LITERAL. `vclaw_config()` builds the engine's OIDC
+    //   config and `vclaw_token_cache_key()` builds the key for the cache the sign-out path reads. BOTH derive
+    //   `discovery_url`, `client_id` and `scopes` from the same constants — and the file's own comment at :300-303
+    //   says why that matters:
+    //       "the cache this command reads and the cache the engine writes can only disagree if the engine changes
+    //        the derivation SHAPE — and that disagreement is reported, never assumed away."
+    //   ⇒ THESE TWO MUST NOT DESCRIBE DIFFERENT IDENTITY PROVIDERS. A drift between them is exactly the shape of
+    //     the 2026-10-04 device-binding bug documented at :172-190: a credential silently lost between two
+    //     derivations that were supposed to describe the same thing.
+    // ★ AND THIS TEST NEEDS NO ANCHOR FILE — it compares two things in THIS file against each other, so it cannot
+    //   go stale the way a duplicated-literal assertion can.
+
+    #[test]
+    fn config_and_cache_key_describe_the_same_identity_provider() {
+        let config = vclaw_config();
+        let key = vclaw_token_cache_key();
+
+        assert_eq!(
+            config.discovery_url, key.discovery_url,
+            "the engine's discovery URL and the cache key's discovery URL must not diverge"
+        );
+        assert_eq!(
+            config.client_id, key.client_id,
+            "the engine's client id and the cache key's client id must not diverge"
+        );
+        // ⚠ THE TWO `scopes` FIELDS ARE DIFFERENT TYPES AND CANNOT BE COMPARED DIRECTLY:
+        //   `PkceOAuthConfig.scopes`    = Vec<String>       (auth.rs:318)
+        //   `VclawTokenCacheKey.scopes` = &'a [&'a str]     (vclaw_sign_out.rs:79)
+        // ⇒ COMPARE THE ELEMENTS, not the containers. `assert_eq!(config.scopes, key.scopes)` does NOT compile,
+        //   and I found that by READING the two declarations rather than by a failed build.
+        let config_scopes: Vec<&str> = config.scopes.iter().map(String::as_str).collect();
+        assert_eq!(
+            config_scopes,
+            key.scopes.to_vec(),
+            "a scope change must invalidate the cache ONCE and identically for both derivations"
+        );
+        assert_eq!(config.cache_namespace, key.namespace);
+    }
+
+    #[test]
+    fn config_pins_the_vclaw_idp_endpoints_and_scope_set() {
+        let config = vclaw_config();
+        // Literals on purpose: these are the values the LIVE IDP was registered for, and a change to any of
+        // them is a re-registration event, not a refactor. Pinning them here makes that visible in review.
+        assert_eq!(
+            config.discovery_url,
+            "https://auth.vclawhub.com/.well-known/openid-configuration"
+        );
+        assert_eq!(config.client_id, "buzz-desktop");
+        assert_eq!(config.cache_namespace, "vclaw-idp");
+        assert_eq!(
+            config.scopes,
+            vec![
+                "openid".to_owned(),
+                "profile".to_owned(),
+                "email".to_owned(),
+                "groups".to_owned(),
+                "offline_access".to_owned(),
+            ],
+            "offline_access is what makes silent refresh possible; dropping it is a behaviour change"
+        );
+        assert!(
+            config.cache_dir_override.is_none(),
+            "an override would move the cache the sign-out path reads"
+        );
+    }
+
+    #[test]
+    fn config_scopes_are_not_empty_and_have_no_duplicates() {
+        let scopes = vclaw_config().scopes;
+        assert!(!scopes.is_empty());
+        let mut sorted = scopes.clone();
+        sorted.sort();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(
+            before,
+            sorted.len(),
+            "a duplicate scope is a typo, not a request"
+        );
+    }
+
+    // ---------------------------------------------------------------- vclaw_auth_error
+    //
+    // ★ A COMPLETE MATCH OVER EIGHT VARIANTS, EACH WITH ITS OWN USER-FACING STRING. The failure this catches is
+    //   not a missing arm (the match is exhaustive, so that will not compile) — it is **A COPIED ARM**: two
+    //   variants mapping to the same text, so a user is told "sign-in timed out" when the network was down.
+    //   That is a diagnosability regression that compiles perfectly and passes review.
+
+    #[test]
+    fn every_auth_error_maps_to_a_distinct_nonempty_message() {
+        let cases = [
+            AuthError::NoCredential,
+            AuthError::Denied,
+            AuthError::TimedOut,
+            AuthError::BrowserOpenFailed,
+            AuthError::NetworkUnavailable,
+            AuthError::RefreshRejected,
+            AuthError::ExchangeFailed,
+            AuthError::LockTimeout,
+        ];
+        // ⚠ `AuthError` derives Debug, Clone, PartialEq, Eq - ***NOT Copy*** (auth.rs:122) - so this must
+        //   clone rather than dereference. `vclaw_auth_error(*e)` does NOT compile.
+        let messages: Vec<String> = cases.iter().map(|e| vclaw_auth_error(e.clone())).collect();
+
+        for (i, message) in messages.iter().enumerate() {
+            assert!(
+                !message.trim().is_empty(),
+                "variant {i} maps to an empty message"
+            );
+        }
+        let mut unique = messages.clone();
+        unique.sort();
+        let total = unique.len();
+        unique.dedup();
+        assert_eq!(
+            total,
+            unique.len(),
+            "two AuthError variants map to the SAME text: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn auth_error_messages_name_vclaw_so_the_user_knows_which_identity_provider_failed() {
+        // The app talks to more than one identity provider; a message that does not say "vclaw" costs the user
+        // the first step of diagnosis. Only the variants where a user is mid-flow are checked, because the
+        // variants that describe an internal state (no credential) are surfaced in a different context.
+        for error in [
+            AuthError::Denied,
+            // (AuthError is Clone, not Copy - the iteration below clones from this array)
+            AuthError::TimedOut,
+            AuthError::BrowserOpenFailed,
+            AuthError::NetworkUnavailable,
+            AuthError::RefreshRejected,
+            AuthError::ExchangeFailed,
+            AuthError::LockTimeout,
+        ] {
+            let message = vclaw_auth_error(error.clone());
+            assert!(
+                message.contains("vclaw"),
+                "{error:?} produced a message that does not name the provider: {message:?}"
+            );
+        }
+    }
+}
