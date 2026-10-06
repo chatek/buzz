@@ -60,10 +60,26 @@ test("Sign out clears the vclaw session without the destructive wipe", async ({
   );
   expect(commands).not.toContain("sign_out");
 
-  // The identity is still here: the profile card still shows the key actions a
-  // wiped app cannot show, and the section still offers both actions.
-  await expect(page.getByTestId("signout-open-dialog")).toBeVisible();
-  await expect(page.getByTestId("settings-signout")).toContainText("Sign out");
+  // ⚠ THIS ASSERTED `signout-open-dialog` SURVIVES, AND IT NO LONGER DOES — BY REQUEST. MEASURED 2026-10-06:
+  // `SignOutSection.tsx:172` calls `clearCommunities()` under a comment quoting the OPERATOR (2026-10-04):
+  //   *"I clicked 'Signout' but it shall also mean 'Leave community' or leave any logged in communities."*
+  // So signing out now LEAVES the community, which UNMOUNTS the whole community-scoped Settings/Profile
+  // surface — and the button goes with it. **THE TEST PREDATED THAT REQUEST.**
+  //
+  // ★ AND THE INTENT IT CARRIED IS STILL ASSERTED — just not through a proxy that no longer exists:
+  //   * the SIGN-OUT command ran and the DESTRUCTIVE one did not  (asserted above, lines 44-61)
+  //   * the app is back at the JOIN surface, i.e. it LEFT rather than wiped
+  // A wipe would relaunch into FIRST-RUN key setup; leaving returns to `welcome-setup`.
+  await expect(page.getByTestId("welcome-setup")).toBeVisible({
+    timeout: 10_000,
+  });
+  // and the destructive command never ran, re-checked AFTER the transition completed
+  const commandsAfter = await page.evaluate(
+    () =>
+      (window as Window & { __BUZZ_E2E_COMMANDS__?: string[] })
+        .__BUZZ_E2E_COMMANDS__ ?? [],
+  );
+  expect(commandsAfter).not.toContain("sign_out");
 });
 
 test("delete button unlocks only after backup + typed phrase", async ({

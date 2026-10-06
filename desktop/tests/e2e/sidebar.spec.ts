@@ -148,7 +148,20 @@ test("sidebar rows separate hover, selected, and reorder states", async ({
   expect(selectedBox).not.toBeNull();
   if (!selectedBox) return;
 
-  const draggableRow = selectedRow.locator("..");
+  // ⚠ NOT `selectedRow.locator("..")`. MEASURED 2026-08/10-06: the drag attributes live on
+  // `<div data-sidebar-draggable-channel data-sidebar-drag-state=…>` (SidebarDnd.tsx:42-53), and the
+  // element that carries `data-testid="channel-<name>"` is a GRANDCHILD of it:
+  //     <div data-sidebar-draggable-channel data-sidebar-drag-state>
+  //       <div class="w-full min-w-0">          <- `locator("..")` landed HERE
+  //         <button data-testid="channel-general">
+  // ⇒ `locator("..")` is ONE LEVEL TOO SHALLOW, so every `toHaveAttribute("data-sidebar-drag-state")`
+  //   below asserted against a node that never has that attribute.
+  // ★ AND A `locator()` SEARCHES DESCENDANTS, NOT ANCESTORS — so walking UP needs `{ has: … }`, which
+  //   finds the ancestors that CONTAIN the row. This also caused the `sidebar.spec.ts:1616` failure:
+  //   one locator bug, two reported symptoms.
+  const draggableRow = page.locator("[data-sidebar-draggable-channel]", {
+    has: selectedRow,
+  });
 
   await page.mouse.move(
     selectedBox.x + selectedBox.width / 2,

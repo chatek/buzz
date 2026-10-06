@@ -325,7 +325,22 @@ test.describe("inbox stable-conversation regressions", () => {
       ) as HTMLElement | null;
       if (!pane) return;
       pane.scrollTop = pane.scrollHeight; // go to bottom
-      const mid = Math.max(1, Math.floor(pane.scrollHeight / 2));
+      // ⚠ A MID-POSITION IS (max - 0) / 2, NOT scrollHeight / 2.
+      // `scrollHeight / 2` EXCEEDS the maximum (`scrollHeight - clientHeight`) whenever
+      // `clientHeight > scrollHeight / 2`, and the assignment below then CLAMPS TO THE BOTTOM.
+      // MEASURED 2026-10-07: scrollHeight 1145, clientHeight 671 -> the formula gave 572 while the
+      // maximum was 474, so the pane meant to be MID-THREAD sat AT THE BOTTOM. A bottom-pinned pane
+      // follows content APPENDED below it, so injecting the newer sibling moved scrollTop by that
+      // row's height (446 -> 474, exactly the 28 px of growth) and the `<= 2` check at the end of
+      // this test failed by whichever SLICE of that growth had landed before the read. Quiet run:
+      // the slice is 0 and the test passes. Loaded run: the slice was 8, twice.
+      // `[overflow-anchor:none]` on this pane does not prevent that - disabling scroll ANCHORING
+      // stops the browser compensating for content inserted ABOVE, not the bottom-pinned rule for
+      // content appended BELOW.
+      const mid = Math.max(
+        1,
+        Math.floor((pane.scrollHeight - pane.clientHeight) / 2),
+      );
       pane.scrollTop = mid; // settle at mid
     });
     // State-based wait: scroll must be non-zero before proceeding.

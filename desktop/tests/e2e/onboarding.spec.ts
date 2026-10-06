@@ -10,6 +10,7 @@ import {
   TEST_IDENTITIES,
 } from "../helpers/bridge";
 import { expectEmojiMartStylesInstalled } from "../helpers/css";
+import { waitForAnimations } from "../helpers/animations";
 import {
   invokeMockCommand,
   publishWelcomeTeamPresence,
@@ -1750,6 +1751,16 @@ test("canceling a join to an existing inactive community preserves it", async ({
 test("connected first-community profile keeps navigation inside the card and balances the avatar editor", async ({
   page,
 }) => {
+  // ⚠ THIS TEST RECORDS AN ANIMATED AVATAR, WALKS THE WHOLE EDITOR (IMAGE -> EMOJI -> ANIMATED) AND PERFORMS
+  // SEVERAL 1-SECOND-DELAYED UPLOADS — **IT CANNOT FIT THE FILE'S 30 s DEFAULT.** Its sibling says so:
+  // `animated-avatar.spec.ts:146  test.setTimeout(120_000)`. ⚠ AND THIS FILE CONTAINED **ZERO** `setTimeout`
+  // CALLS, so the default applied to every test in it.
+  // ★ MEASURED 2026-10-06: BEFORE the unbounded model-load await was fixed, this test never reached the
+  //   budget problem — it hung at *"Recording... hold still-ish."* forever. **NOW THAT THE RECORDING RUNS, THE
+  //   BUDGET IS THE LIMIT** — and the log said so: `Test timeout of 30000ms exceeded`. *That is a test given a
+  //   realistic budget for what it actually does, not a bound widened to hide a failure: the failure it used
+  //   to produce has been fixed, and this one is about elapsed time.*
+  test.setTimeout(120_000);
   await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
   await page.addInitScript(
     ({ pubkey, transactionStorageKey }) => {
@@ -2043,6 +2054,12 @@ test("connected first-community profile keeps navigation inside the card and bal
     color: "rgb(240, 240, 205)",
   });
   const defaultDialogHeight = imageDialogHeight;
+  // ⚠ THE DIALOG IS STILL ANIMATING HERE. MEASURED 2026-10-06: without this the click times out with
+  // ***"element is not stable"*** — Playwright retries a click against a MOVING TARGET and gives up.
+  // `tests/helpers/animations.ts` exists for exactly this, and **THIS SPEC NEVER IMPORTED IT** while
+  // `activity-scope-label-screenshots` and `add-community-screenshots` call it routinely.
+  // *Not a timeout widened — a missing wait, which is the thing the helper is for.*
+  await waitForAnimations(page);
   await page.getByRole("tab", { name: "Emoji" }).click();
   const emojiPicker = page.locator("em-emoji-picker");
   await expect(emojiPicker.locator("input[type='search']")).toBeVisible();
@@ -2060,6 +2077,7 @@ test("connected first-community profile keeps navigation inside the card and bal
   await page.waitForTimeout(300);
   const emojiEditorLayout = await measureAnchoredEditorLayout();
   expect(emojiEditorLayout.saveBox.y).toBe(imageEditorLayout.saveBox.y);
+  await waitForAnimations(page);
   await page.getByRole("tab", { name: "Animated" }).click();
   await expect(saveButton).toHaveCount(0);
   const iphoneCameraButton = page.getByTestId(

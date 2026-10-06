@@ -670,17 +670,31 @@ test("records from the composer and renders an inline waveform card", async ({
   await expect(removeVoiceNote).toHaveCSS("opacity", "0");
   await composerVoiceNote.hover();
   await expect(removeVoiceNote).toHaveCSS("opacity", "1");
+  // ⚠ RE-MEASURE THE CARD HERE. `composerCardBox` ABOVE WAS CAPTURED BEFORE THE HOVER, AND COMPARING IT TO A BOX
+  // MEASURED AFTER THE HOVER COMPARES TWO DIFFERENT LAYOUT STATES.
+  // ★ MEASURED 2026-10-06, in a full 1663-test run: `remove.left - card.right` came out ***+16.98 px*** against a
+  //   `composerCardBox` captured earlier — i.e. the card had grown by ~29 px between the two reads.
+  // ★ AND THE DESIGN SAYS WHAT THE ANSWER SHOULD BE: `COMPOSER_MEDIA_REMOVE_CLASS` (ComposerAttachments.tsx:55-57)
+  //   uses `-right-1` (right edge 4 px outside the card) and `w-4` (16 px wide), so
+  //       remove.right = card.right + 4   and   remove.left = card.right - 12
+  //   — A ***12 px STRADDLE, BY CONSTRUCTION***. The assertions below therefore hold on a FRESH measurement:
+  //   `remove.left < card.right` (12 px inside) AND `remove.right > card.right` (4 px outside). They cannot both
+  //   hold against a stale box that is 29 px wide of the truth.
+  // ⇒ THIS IS NOT A RELAXATION: it is the same two relationships, measured in ONE layout state instead of two.
+  await waitForAnimations(page);
+  const settledCardBox = await composerCard.boundingBox();
+  expect(settledCardBox).not.toBeNull();
   const removeVoiceNoteBox = await removeVoiceNote.boundingBox();
   expect(removeVoiceNoteBox).not.toBeNull();
   expect(removeVoiceNoteBox?.x ?? Number.POSITIVE_INFINITY).toBeLessThan(
-    (composerCardBox?.x ?? 0) + (composerCardBox?.width ?? 0),
+    (settledCardBox?.x ?? 0) + (settledCardBox?.width ?? 0),
   );
   expect(removeVoiceNoteBox?.y ?? Number.POSITIVE_INFINITY).toBeLessThan(
-    composerCardBox?.y ?? 0,
+    settledCardBox?.y ?? 0,
   );
   expect(
     (removeVoiceNoteBox?.x ?? 0) + (removeVoiceNoteBox?.width ?? 0),
-  ).toBeGreaterThan((composerCardBox?.x ?? 0) + (composerCardBox?.width ?? 0));
+  ).toBeGreaterThan((settledCardBox?.x ?? 0) + (settledCardBox?.width ?? 0));
   expect(
     (removeVoiceNoteBox?.y ?? 0) + (removeVoiceNoteBox?.height ?? 0),
   ).toBeGreaterThan(composerCardBox?.y ?? 0);
