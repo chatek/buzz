@@ -18,7 +18,9 @@ export const KIND_MODERATION_UNTIMEOUT = 9043;
 export const KIND_MODERATION_RESOLVE_REPORT = 9044;
 export const KIND_STREAM_MESSAGE_V2 = 40002;
 export const KIND_STREAM_MESSAGE_EDIT = 40003;
-export const KIND_CHANNEL_THREAD_SUMMARY = 39005;
+// 39007, not 39005: 39005 is NIP-29's "group pinned events", left free for
+// pinning. Operator-ruled move 2026-10-06 — see docs/nips/NIP-CW.md.
+export const KIND_CHANNEL_THREAD_SUMMARY = 39007;
 export const KIND_CHANNEL_WINDOW_BOUNDS = 39006;
 export const KIND_STREAM_MESSAGE_DIFF = 40008;
 export const KIND_REMINDER = 40007;

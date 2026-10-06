@@ -2132,7 +2132,7 @@ test("thread summary badge survives a retained older-history prepend", async ({
   // Seed a reply to the NEWEST deep-history row before the channel is opened:
   // no live subscription exists yet, so the reply lands only in the mock store.
   // It is not a top-level timeline row, so the badge rendered for #599 is
-  // driven purely by the relay-shaped 39005 page summary — exactly the state
+  // driven purely by the relay-shaped 39007 page summary — exactly the state
   // the deferred-pass entry fallback used to drop.
   await page.evaluate(() => {
     window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({

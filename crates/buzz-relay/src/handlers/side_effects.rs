@@ -727,7 +727,7 @@ pub async fn emit_system_message(
     Ok(())
 }
 
-/// Sign and fan out a fresh relay-signed `kind:39005` thread-summary overlay
+/// Sign and fan out a fresh relay-signed `kind:39007` thread-summary overlay
 /// for `root_id` after a thread mutation (reply insert or threaded delete).
 ///
 /// Fan-out only — never stored. Channel-window pages recompute summaries from
@@ -1745,7 +1745,7 @@ async fn handle_delete_event_side_effect(
     }
 
     // Thread counters were decremented in the same transaction — push a fresh
-    // relay-signed 39005 so live badge counts also count *down*.
+    // relay-signed 39007 so live badge counts also count *down*.
     if let Some(root_id) = root_id {
         emit_live_thread_summary(tenant, state, channel_id, root_id);
     }
@@ -2281,7 +2281,7 @@ async fn handle_standard_deletion_event(
         }
 
         // Thread counters were decremented in the same transaction — push a
-        // fresh relay-signed 39005 so live badge counts also count *down*.
+        // fresh relay-signed 39007 so live badge counts also count *down*.
         if let (Some(root_id), Some(channel_id)) = (root_id, target_event.channel_id) {
             emit_live_thread_summary(tenant, state, channel_id, root_id);
         }

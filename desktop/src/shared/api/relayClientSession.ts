@@ -328,7 +328,7 @@ export class RelayClient {
     channelId: string,
     onEvent: (event: RelayEvent) => void,
   ) {
-    // 39005 rides only this window-store subscription — CHANNEL_EVENT_KINDS'
+    // 39007 rides only this window-store subscription — CHANNEL_EVENT_KINDS'
     // other consumers (unread tracking, cache merges) must never see
     // summary overlays.
     return this.subscribe(

@@ -2720,7 +2720,7 @@ async fn test_private_channel_member_cannot_grant_admin() {
 }
 
 /// Live badge counts: every thread mutation pushes a fresh relay-signed
-/// kind:39005 recount to channel subscribers — a reply counts up, deleting
+/// kind:39007 recount to channel subscribers — a reply counts up, deleting
 /// that reply counts back down — without any window refetch.
 #[tokio::test]
 #[ignore]
@@ -2740,10 +2740,10 @@ async fn test_reply_ingest_pushes_live_thread_summary() {
     assert!(ok.accepted, "root rejected: {}", ok.message);
 
     // Live subscription shaped like the desktop window-store one: channel
-    // scope with 39005 in kinds.
+    // scope with 39007 in kinds.
     let sid = sub_id("live-summary");
     let filter = Filter::new()
-        .kind(Kind::Custom(39005))
+        .kind(Kind::Custom(39007))
         .custom_tags(SingleLetterTag::lowercase(Alphabet::H), [channel.as_str()]);
     client
         .subscribe(&sid, vec![filter])
@@ -2759,9 +2759,9 @@ async fn test_reply_ingest_pushes_live_thread_summary() {
             match client
                 .recv_event(Duration::from_secs(5))
                 .await
-                .expect("recv 39005")
+                .expect("recv 39007")
             {
-                RelayMessage::Event { event, .. } if event.kind == Kind::Custom(39005) => {
+                RelayMessage::Event { event, .. } if event.kind == Kind::Custom(39007) => {
                     return *event;
                 }
                 _ => continue,
@@ -2812,7 +2812,7 @@ async fn test_reply_ingest_pushes_live_thread_summary() {
 /// F3 (workflow path): a `message_posted` workflow whose `send_message` action
 /// has `reply_in_thread: true` posts a threaded reply to the triggering
 /// top-level message — and that relay-built reply must push the same live
-/// kind:39005 thread-summary overlay the human ingest path does, so desktops
+/// kind:39007 thread-summary overlay the human ingest path does, so desktops
 /// update the root's badge without refetching. Also exercises F2's semantics:
 /// the `trigger_is_reply == false` filter must fire on the top-level message.
 #[tokio::test]
@@ -2862,12 +2862,12 @@ async fn test_workflow_reply_in_thread_pushes_live_thread_summary() {
         "workflow def not accepted: {body}"
     );
 
-    // Live 39005 subscription for the channel, shaped like the desktop window
+    // Live 39007 subscription for the channel, shaped like the desktop window
     // store's.
     let mut ws = BuzzTestClient::connect(&url, &keys).await.expect("connect");
     let sid = sub_id("wf-live-summary");
     let filter = Filter::new()
-        .kind(Kind::Custom(39005))
+        .kind(Kind::Custom(39007))
         .custom_tags(SingleLetterTag::lowercase(Alphabet::H), [channel.as_str()]);
     ws.subscribe(&sid, vec![filter]).await.expect("subscribe");
     ws.collect_until_eose(&sid, Duration::from_secs(5))
@@ -2883,15 +2883,15 @@ async fn test_workflow_reply_in_thread_pushes_live_thread_summary() {
     let ok = ws.send_event(root).await.expect("send root");
     assert!(ok.accepted, "root rejected: {}", ok.message);
 
-    // The workflow reply's 39005 overlay must arrive and target the root with a
+    // The workflow reply's 39007 overlay must arrive and target the root with a
     // reply_count of 1 — proving the relay-built reply pushed the live summary.
     let summary = loop {
         match ws
             .recv_event(Duration::from_secs(10))
             .await
-            .expect("recv 39005 for workflow reply")
+            .expect("recv 39007 for workflow reply")
         {
-            RelayMessage::Event { event, .. } if event.kind == Kind::Custom(39005) => break *event,
+            RelayMessage::Event { event, .. } if event.kind == Kind::Custom(39007) => break *event,
             _ => continue,
         }
     };

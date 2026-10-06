@@ -432,7 +432,13 @@ pub const KIND_NIP29_GROUP_ROLES: u32 = 39003;
 // requests — see docs/bridge-channel-window.md.
 /// Thread summary overlay: `e`/`d` tag = root event id, content =
 /// `{reply_count, descendant_count, last_reply_at, participants}`.
-pub const KIND_THREAD_SUMMARY: u32 = 39005;
+///
+/// Kind 39007, not 39005: NIP-29 defines 39005 as *group pinned events* and
+/// pinning is planned here, so 39005 is deliberately left free. 39007 is
+/// defined by neither NIP-29 nor Buzz. Operator-ruled move 2026-10-06; it
+/// needed no migration — overlays are synthesized at query time, never stored.
+/// See docs/nips/NIP-CW.md.
+pub const KIND_THREAD_SUMMARY: u32 = 39007;
 /// Window bounds overlay: `d` tag = `<channel_id>:<request-cursor-or-head>`,
 /// content = `{has_more, next_cursor}`. The only authority on exhaustion —
 /// clients must not infer `has_more` from row counts.
@@ -865,7 +871,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620
 const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_PROJECT)); // 30621 ∈ 30000–39999
-const _: () = assert!(is_parameterized_replaceable(KIND_THREAD_SUMMARY)); // 39005 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(KIND_THREAD_SUMMARY)); // 39007 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_WINDOW_BOUNDS)); // 39006 ∈ 30000–39999
 
 // Compile-time: NIP-34 parameterized replaceable kinds are in the correct range.
@@ -908,6 +914,16 @@ mod tests {
         for &k in ALL_KINDS {
             assert!(seen.insert(k), "duplicate kind value: {k}");
         }
+    }
+
+    /// The overlay number is a wire contract, and 39005 is spoken for: NIP-29
+    /// defines it as "group pinned events" and pinning is planned here. Assert
+    /// both halves so a silent renumber — or a re-collision with NIP-29 —
+    /// fails here rather than on the wire.
+    #[test]
+    fn thread_summary_overlay_is_39007_and_39005_stays_free() {
+        assert_eq!(KIND_THREAD_SUMMARY, 39007);
+        assert_ne!(KIND_THREAD_SUMMARY, 39005, "39005 is NIP-29 pinned events");
     }
 
     #[test]

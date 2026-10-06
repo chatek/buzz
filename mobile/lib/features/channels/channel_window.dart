@@ -254,7 +254,7 @@ ChannelWindowStore appendOlderChannelWindow(
   );
 }
 
-/// Decode a kind-39005 thread summary. Same payload whether it came down as a
+/// Decode a kind-39007 thread summary. Same payload whether it came down as a
 /// channel-window page overlay or over the live socket — one contract, two doors.
 ChannelWindowThreadSummary parseChannelWindowThreadSummary(NostrEvent event) {
   final payload = _parseJsonMap(event, 'thread summary');

@@ -47,7 +47,7 @@ const mapSummary = (payload: SummaryPayload): ChannelWindowThreadSummary => ({
 });
 
 /**
- * Parse a relay-pushed live `39005` into its root id and summary, or null for
+ * Parse a relay-pushed live `39007` into its root id and summary, or null for
  * anything that is not a well-formed thread summary. Live-path counterpart of
  * the page parsing below — same wire contract, delivered by subscription.
  */

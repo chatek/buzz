@@ -3226,7 +3226,7 @@ async fn ingest_event_inner(
     }
 
     // A freshly inserted reply changed its thread's counters (updated in the
-    // same transaction as the insert) — push a fresh relay-signed 39005 so
+    // same transaction as the insert) — push a fresh relay-signed 39007 so
     // subscribed clients can update badge counts without refetching the head
     // window. Page responses recompute summaries independently, so this is
     // fan-out-only and best-effort.

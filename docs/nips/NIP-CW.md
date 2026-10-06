@@ -13,7 +13,7 @@ Channel Window
 This NIP defines the **channel window**: a relay-computed, cursor-paged view of a channel's *top-level* timeline, served as ordinary signed Nostr events through an extended NIP-01 filter. One request returns a page of top-level rows in stable keyset order, optionally accompanied by the aux closure and two relay-signed overlay families:
 
 - the **aux closure** — stored reactions, deletions, and edits targeting the returned rows, with their original authors and signatures (`include_aux`),
-- **thread summaries** — one relay-signed `kind:39005` per row that has replies (`include_summaries`),
+- **thread summaries** — one relay-signed `kind:39007` per row that has replies (`include_summaries`),
 - **window bounds** — exactly one relay-signed `kind:39006` carrying the authoritative `has_more` fact and the next-page cursor.
 
 The extension adds no endpoint and no envelope. The wire format is the flat array of signed events the query surface already returns; a client that ignores this NIP receives standard behavior everywhere.
@@ -41,7 +41,7 @@ This document uses MUST, MUST NOT, SHOULD, MAY, and RECOMMENDED as defined in RF
 - **relay identity**: The keypair whose pubkey the relay advertises (e.g. NIP-11 `self`). All overlay events are signed with it.
 - **row**: A stored, signed event returned as part of the page proper (usually client-authored; Buzz also stores relay-signed events carrying actor provenance). Rows are the only events that count against `limit`.
 - **top-level**: An event that opens a thread rather than replying into one — defined by wire tags in §Top-level Classification.
-- **overlay**: A relay-signed event (`kind:39005`, `kind:39006`) synthesized at query time. Overlays are metadata *about* rows: never a row, never a cursor input, never durable history.
+- **overlay**: A relay-signed event (`kind:39007`, `kind:39006`) synthesized at query time. Overlays are metadata *about* rows: never a row, never a cursor input, never durable history.
 - **composite cursor**: The pair `(created_at, id)` identifying a position in the total order. `created_at` is unix seconds; `id` is a 64-character lowercase hex event id.
 - **scan position**: The composite cursor of the last event the relay's query *retained*, whether or not that event was ultimately delivered as a row (see §Relay Processing step 3). The cursor tracks where the scan stopped, not what the client received.
 
@@ -55,7 +55,7 @@ A window request is a standard filter plus extension fields, submitted wherever 
   "#h": ["<channel-id>"],        // REQUIRED: exactly one channel
   "limit": 50,                   // row budget (rows only, never overlays)
   "top_level": true,             // selects the window path
-  "include_summaries": true,     // optional: kind:39005 overlays
+  "include_summaries": true,     // optional: kind:39007 overlays
   "include_aux": true,           // optional: aux closure
   "until": 1751500000,           // ┐ composite request cursor —
   "before_id": "<64-hex id>"     // ┘ both or neither
@@ -95,7 +95,7 @@ For a valid window filter on an accessible channel (§Access Scoping) the relay 
 2. **Probe exhaustion.** Evaluate the query with an internal budget of `limit + 1` rows *after all predicates*. If `limit + 1` rows match, `has_more = true` and the sentinel row is discarded — it MUST NOT appear on the wire, in overlays, or in the aux closure. Otherwise `has_more = false`.
 3. **Derive the next cursor.** If `has_more`, `next_cursor` is the **scan position**: the composite cursor of the last retained candidate, captured *before* any serving-time reconstruction or filtering of individual events. Otherwise `next_cursor = null`. The invariant `next_cursor = null ⇔ has_more = false` MUST hold. Because it is a scan position, `next_cursor` MAY reference an event that does not appear in the response (e.g. one skipped by the relay as unreconstructable); it is authoritative regardless, and deriving it from delivered rows instead would stall pagination on every skipped event.
 4. **Append the aux closure** (if `include_aux` and at least one row): two hops of events referencing the rows by `e` tag. Hop 1: reactions (`kind:7`), deletions (`kind:5`, `kind:9005`), and edits (Buzz `kind:40003`) whose `e` tag is a row id. Hop 2: deletions whose `e` tag is a hop-1 event id (a delete-of-a-reaction). Each event appears at most once; access-scoped events the requester cannot read are omitted. Relays MAY cap each hop (Buzz: 1000 events per hop).
-5. **Append thread summaries** (if `include_summaries`): one `kind:39005` per row that has at least one reply. Rows without replies get none.
+5. **Append thread summaries** (if `include_summaries`): one `kind:39007` per row that has at least one reply. Rows without replies get none.
 6. **Append window bounds**: exactly one `kind:39006` per served window response, always — including empty and exhausted pages.
 
 The response is the surface's ordinary flat array of signed events — rows first in keyset order, then aux, then summaries, then bounds. Clients MUST partition by kind and MUST NOT rely on array position beyond the ordering of rows.
@@ -113,13 +113,19 @@ Two consequences implementers MUST NOT miss:
 
 Overlays are signed by the relay identity and synthesized per response. Both kinds sit in the parameterized-replaceable range, so a client that caches them gets replace-by-`d`-tag semantics from NIP-01 with no special handling. Relays MUST reject client-submitted events of either kind at ingest.
 
-### `kind:39005` — thread summary
+### `kind:39007` — thread summary
+
+> **Kind change, 2026-10-06 (operator-ruled).** This overlay is **39007**; it
+> was 39005. **39005 is NIP-29's "group pinned events" and stays free**, because
+> pinning is planned here. No data migration was needed: overlays are
+> synthesized at query time and nothing is stored under either number
+> (§Terminology: never a row, never a cursor input, never durable history).
 
 One per returned row with replies. Tag cardinality is exact: one `e`, one `d`, one `h`, nothing else.
 
 ```jsonc
 {
-  "kind": 39005,
+  "kind": 39007,
   "pubkey": "<relay-identity-pubkey>",
   "tags": [
     ["e", "<row-event-id>"],
@@ -162,7 +168,7 @@ Exactly one per served window response. The **only** authority on exhaustion. Ta
 3. **Exhaustion**: `39006.has_more` is the only exhaustion signal. `rows < limit` proves nothing — an exact-multiple final page returns `limit` rows with `has_more = false`, and predicate filtering can shrink any page. A client MUST NOT stop paging on row count, and MUST NOT treat a full page as "more available."
 4. **Immutability**: fetched pages are immutable history chained cursor→cursor. New live events MUST NOT be spliced into fetched pages; deliver them through a separate live subscription (`since: now`) and merge at render time. On reconnect, refetch the head page and re-arm the live subscription; deeper pages need no repair.
 5. **Bounds integrity**: a window response missing its `kind:39006`, or carrying more than one, or carrying one whose `d`-tag binding does not echo the request cursor, whose content is not parseable JSON, or whose content violates `has_more = true ⇔ next_cursor ≠ null`, is not a usable page — the client MUST discard it (and MAY retry) rather than guess at exhaustion. Clients SHOULD additionally reject overlays that violate the exact tag cardinality of §Overlay Event Formats or whose content fields have the wrong runtime types (hardening against a malformed or hostile serializer). Cryptographic verification is governed by §Overlay Trust.
-6. **Overlays are metadata**: never render a `39005`/`39006` as a message, never feed one into cursor math, and key cached summaries by their `d` tag (latest wins).
+6. **Overlays are metadata**: never render a `39007`/`39006` as a message, never feed one into cursor math, and key cached summaries by their `d` tag (latest wins).
 
 ## Degradation
 
@@ -177,9 +183,9 @@ A relay implementing this NIP MAY advertise it in its NIP-11 relay information d
 
 Overlays are relay-authored facts about data the requester can already read. A relay MUST apply its normal access scoping to rows and to every aux-closure event, and §Access Scoping governs inaccessible channels: no rows, no overlays, no distinguishable error.
 
-`kind:39005` aggregates thread activity (participant pubkeys, counts, recency) into one event. It only ever describes threads rooted in a channel the requester can read, so it reveals nothing a client could not compute from readable events — it saves round trips, not permissions.
+`kind:39007` aggregates thread activity (participant pubkeys, counts, recency) into one event. It only ever describes threads rooted in a channel the requester can read, so it reveals nothing a client could not compute from readable events — it saves round trips, not permissions.
 
-Client-submitted `39005`/`39006` MUST be rejected at ingest (relay-only kinds); a forged overlay accepted into storage could later masquerade as relay-signed state.
+Client-submitted `39007`/`39006` MUST be rejected at ingest (relay-only kinds); a forged overlay accepted into storage could later masquerade as relay-signed state.
 
 ### Overlay Trust
 

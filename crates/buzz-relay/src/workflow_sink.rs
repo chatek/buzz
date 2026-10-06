@@ -456,7 +456,7 @@ impl ActionSink for RelayActionSink {
                 .await;
 
                 // A threaded reply changed its thread's counters — push a fresh
-                // relay-signed kind:39005 so subscribed clients update badge
+                // relay-signed kind:39007 so subscribed clients update badge
                 // counts without refetching the head window, exactly as the
                 // ingest path does after a reply insert. Fan-out-only and
                 // best-effort; skipped for top-level (non-reply) messages.

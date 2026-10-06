@@ -5816,7 +5816,7 @@ function buildMockChannelWindowBounds(
 /**
  * one server-assembled channel window over the `/query` bridge. Emits the flat
  * event array the relay assembles — top-level rows (newest first), then the aux
- * closure, then relay-signed `39005` summaries and exactly one `39006` bounds
+ * closure, then relay-signed `39007` summaries and exactly one `39006` bounds
  * event carrying `has_more` + `next_cursor`. The client derives its cursor and
  * exhaustion solely from `39006`, never from the rows, so this handler returns
  * the raw array unchanged.

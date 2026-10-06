@@ -13,7 +13,7 @@ export type ChannelWindowRow = {
 };
 export type LiveThreadSummary = {
   summary: ChannelWindowThreadSummary;
-  /** `created_at` of the relay 39005 that carried it — newest wins per root. */
+  /** `created_at` of the relay 39007 that carried it — newest wins per root. */
   createdAt: number;
 };
 export type ChannelWindowPage = {
@@ -30,7 +30,7 @@ export type ChannelWindowStore = {
   /** Live structural events retained independently from frozen page closure. */
   liveAux: RelayEvent[];
   /**
-   * Relay-pushed 39005 summaries (keyed by thread root id) not yet superseded
+   * Relay-pushed 39007 summaries (keyed by thread root id) not yet superseded
    * by a page. A page response supersedes them for the roots it re-delivers.
    */
   liveSummaries: Record<string, LiveThreadSummary>;
@@ -156,7 +156,7 @@ export function appendOlderChannelWindow(
 }
 
 /**
- * Record a relay-pushed live `39005` summary. Newest `created_at` wins per
+ * Record a relay-pushed live `39007` summary. Newest `created_at` wins per
  * root: the relay pushes a full recount on every thread mutation, so the
  * latest push is authoritative for that root — including counting *down*
  * after a delete. Retained across scrollback pages (a racing push can be

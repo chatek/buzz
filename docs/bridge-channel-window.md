@@ -1,7 +1,7 @@
 # Bridge `/query` Extension: Channel Window
 
 > **Normative spec:** [NIP-CW](nips/NIP-CW.md) is the canonical, standalone
-> specification of the channel window (kinds 39005/39006, filter extension,
+> specification of the channel window (kinds 39007/39006, filter extension,
 > cursor and trust semantics). This document remains as the ratified
 > engineering contract and internal design record; where wording differs,
 > NIP-CW governs.
@@ -91,11 +91,11 @@ Clients **partition by kind before any cursor math**:
    hop is drained server-side across the DB page clamp, so the closure is
    complete rather than newest-1000.
 3. **Thread summaries** (`include_summaries`) — one relay-signed
-   `kind:39005` per row that has replies.
+   `kind:39007` per row that has replies.
 4. **Window bounds** — exactly one relay-signed `kind:39006` per window
    response.
 
-### `kind:39005` — thread summary overlay
+### `kind:39007` — thread summary overlay
 
 - tags: `["e", <root-id>]`, `["d", <root-id>]`, `["h", <channel-id>]`
 - content: `{"reply_count":n,"descendant_count":n,"last_reply_at":ts|null,"participants":["<hex-pubkey>",...]}`
@@ -116,7 +116,7 @@ Clients **partition by kind before any cursor math**:
   suffix equals the cursor they sent and reject the overlay on mismatch.
 - Reserved field: `oldest_retained` (retention gap), added without a wire
   break if needed.
-- Same overlay rules as 39005: relay-signed, query-time, never stored,
+- Same overlay rules as 39007: relay-signed, query-time, never stored,
   never a row or cursor input.
 
 Both kinds are relay-only: client submission is rejected at ingest.

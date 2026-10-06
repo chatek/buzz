@@ -21,7 +21,7 @@ test("partitions flat rows, summaries, aux, and authoritative bounds", () => {
   const root = event("a", 9, 100);
   const summary = event(
     "s",
-    39005,
+    39007,
     200,
     JSON.stringify({
       reply_count: 2,
@@ -133,7 +133,7 @@ test("parses a relay-pushed live thread summary", () => {
   const rootId = "a".padEnd(64, "0");
   const push = event(
     "s",
-    39005,
+    39007,
     700,
     JSON.stringify({
       reply_count: 4,
@@ -162,10 +162,10 @@ test("drops malformed or mistargeted live thread summaries", () => {
   // Wrong kind.
   assert.equal(parseLiveThreadSummary(event("x", 9, 700, "hi")), null);
   // No e-tag root.
-  assert.equal(parseLiveThreadSummary(event("s", 39005, 700, "{}")), null);
+  assert.equal(parseLiveThreadSummary(event("s", 39007, 700, "{}")), null);
   // Unparseable content only skips one refresh instead of throwing.
   assert.equal(
-    parseLiveThreadSummary(event("s", 39005, 700, "not json", [["e", rootId]])),
+    parseLiveThreadSummary(event("s", 39007, 700, "not json", [["e", rootId]])),
     null,
   );
 });

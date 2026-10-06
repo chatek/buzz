@@ -328,7 +328,7 @@ export function useChannelSubscription(channel: Channel | null) {
     if (!channelId) return;
     if (event.kind === KIND_CHANNEL_THREAD_SUMMARY) {
       // Relay-pushed live badge recount — window-store overlay only, never a
-      // timeline row (mirrors the page path, where 39005 is metadata).
+      // timeline row (mirrors the page path, where 39007 is metadata).
       const parsed = parseLiveThreadSummary(event);
       if (!parsed) return;
       const windowKey = channelWindowKey(channelId);

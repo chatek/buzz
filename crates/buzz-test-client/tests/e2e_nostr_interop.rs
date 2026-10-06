@@ -1737,7 +1737,7 @@ async fn query_channel_window(
 }
 
 /// Partition a window response by kind, the way the client contract requires:
-/// rows (9), summaries (39005), exactly-one bounds (39006), aux (the rest).
+/// rows (9), summaries (39007), exactly-one bounds (39006), aux (the rest).
 fn partition_window(
     events: &[serde_json::Value],
 ) -> (
@@ -1753,7 +1753,7 @@ fn partition_window(
     for e in events {
         match e["kind"].as_u64() {
             Some(9) => rows.push(e.clone()),
-            Some(39005) => summaries.push(e.clone()),
+            Some(39007) => summaries.push(e.clone()),
             Some(39006) => bounds.push(e.clone()),
             _ => aux.push(e.clone()),
         }
@@ -1789,7 +1789,7 @@ async fn test_channel_window_rows_overlays_and_exact_multiple_exhaustion() {
     // the composite key's id ASC tie-break — the dense-second case the old
     // timestamp-only cursor got wrong. Probe the window to learn which root
     // the relay puts first, then hang the reply and reaction off that row so
-    // its 39005/aux land on page 1.
+    // its 39007/aux land on page 1.
     let probe = query_channel_window(&keys, &channel, 2, None).await;
     let (probe_rows, _, _, _) = partition_window(&probe);
     let root_id = probe_rows[0]["id"]
@@ -1832,7 +1832,7 @@ async fn test_channel_window_rows_overlays_and_exact_multiple_exhaustion() {
     // Newest-first: the replied/reacted root is the newest top-level row.
     assert_eq!(rows1[0]["id"].as_str(), Some(root_id.as_str()));
 
-    // The replied root carries a 39005 with its reply count, signed by a key
+    // The replied root carries a 39007 with its reply count, signed by a key
     // that is not the requester (the relay's).
     let summary = summaries1
         .iter()
@@ -1842,14 +1842,14 @@ async fn test_channel_window_rows_overlays_and_exact_multiple_exhaustion() {
                     .any(|t| t[0].as_str() == Some("e") && t[1].as_str() == Some(root_id.as_str()))
             })
         })
-        .unwrap_or_else(|| panic!("no 39005 for replied root. summaries: {summaries1:?}"));
+        .unwrap_or_else(|| panic!("no 39007 for replied root. summaries: {summaries1:?}"));
     let summary_content: serde_json::Value =
         serde_json::from_str(summary["content"].as_str().unwrap()).expect("summary content JSON");
     assert_eq!(summary_content["reply_count"].as_i64(), Some(1));
     assert_ne!(
         summary["pubkey"].as_str(),
         Some(keys.public_key().to_hex().as_str()),
-        "39005 must be relay-signed, not requester-signed"
+        "39007 must be relay-signed, not requester-signed"
     );
 
     // The reaction rides in the aux closure.
@@ -1913,7 +1913,7 @@ async fn test_channel_window_rows_overlays_and_exact_multiple_exhaustion() {
 
 /// The window cursor is composite by contract: `until` without `before_id`
 /// (or vice versa) is a deterministic 400, never a silent timestamp-only
-/// fallback. And client-submitted 39005/39006 are rejected at ingest —
+/// fallback. And client-submitted 39007/39006 are rejected at ingest —
 /// overlay kinds are relay-only.
 #[tokio::test]
 #[ignore]
@@ -1972,7 +1972,7 @@ async fn test_channel_window_rejects_half_cursor_and_client_overlay_kinds() {
 
     // Client-submitted overlay kinds are rejected at ingest.
     let mut ws = BuzzTestClient::connect(&url, &keys).await.expect("connect");
-    for kind in [39005u16, 39006u16] {
+    for kind in [39007u16, 39006u16] {
         let forged = EventBuilder::new(Kind::Custom(kind), "{}")
             .tags([Tag::parse(["h", &channel]).unwrap()])
             .sign_with_keys(&keys)

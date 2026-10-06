@@ -30,7 +30,7 @@ abstract final class EventKind {
   static const userStatus = 30315;
   static const dmVisibility = 30622;
   static const streamMessageV2 = 40002;
-  static const channelThreadSummary = 39005;
+  static const channelThreadSummary = 39007;
   static const channelWindowBounds = 39006;
   static const streamMessageEdit = 40003;
   static const streamMessageDiff = 40008;

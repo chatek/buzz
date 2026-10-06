@@ -353,7 +353,7 @@ One fact — "there are new replies" — travels three independent roads:
 
 | What the user sees | Source |
 |---|---|
-| **Reply count** | Relay pushes a **kind 39005 thread-summary recount** → merged into the window-store overlay (`hooks.ts:266-277`). **Does not come from the replies themselves.** |
+| **Reply count** | Relay pushes a **kind 39007 thread-summary recount** → merged into the window-store overlay (`hooks.ts:266-277`). **Does not come from the replies themselves.** |
 | **Thread pane rows** | A separate React Query cache `["thread-replies", channelId, rootId]` (`useThreadReplies.ts`), filled on open; live replies must be *filed into it* by `appendMessage` (`hooks.ts:282-291`) |
 | **Channel timeline** | Window store — thread replies deliberately early-return before reaching it (`hooks.ts:292`) |
 

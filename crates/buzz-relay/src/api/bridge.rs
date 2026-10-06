@@ -499,7 +499,7 @@ async fn query_all_pages(
 
 /// Serve one `top_level: true` channel-window filter on the bridge `/query`
 /// path (docs/bridge-channel-window.md). Appends, in order: row events, the
-/// aux closure (`include_aux`), `39005` thread-summary overlays
+/// aux closure (`include_aux`), `39007` thread-summary overlays
 /// (`include_summaries`), and exactly one `39006` window-bounds overlay.
 ///
 /// Validation errors (missing `#h`, half a cursor) are deterministic client
@@ -640,7 +640,7 @@ async fn handle_channel_window_filter(
     };
     let ch_hex = ch_id.to_string();
 
-    // 3. Thread-summary overlays: one relay-signed 39005 per row with replies.
+    // 3. Thread-summary overlays: one relay-signed 39007 per row with replies.
     if extension_flag(raw, "include_summaries") {
         for row in &window.rows {
             let Some(summary) = &row.thread_summary else {
