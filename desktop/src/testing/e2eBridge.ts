@@ -14892,6 +14892,45 @@ export function maybeInstallE2eTauriMocks() {
       case "archive_events":
         // Returns the ArchiveBatchResult shape the UI expects.
         return { persisted: 0, dropped: 0 };
+      // ⚠ THE OBSERVER-ARCHIVE BACKFILL LOOP — AND IT IS TWO COMMANDS, NOT ONE.
+      // MEASURED 2026-10-06: without these, an acceptance run failed TWO specs (inbox-live-update.spec.ts:281
+      // and navigation.spec.ts:153) with ***"Unsupported mocked Tauri command:
+      // read_unindexed_observer_rows"*** — and it READ AS FLAKINESS for two runs, because WHICH test hit it
+      // depended on state. The command EXISTS (src-tauri/src/archive/store.rs:729), is UNIT-TESTED
+      // (store_tests.rs:832) and is reachable from here: `shared/api/tauriArchive.ts:497`.
+      // ⚠ AND `index_observer_channel_id` IS ITS PARTNER — the loop is READ UNINDEXED -> INDEX ONE -> REPEAT, so
+      //   stubbing only the first would have MOVED the failure to the second. The pair is stubbed together in the
+      //   UI's own unit test, four times over, and THOSE STUBS ARE THE SPEC FOR THESE SHAPES:
+      //     features/agents/ui/useLoadArchivedObserverEvents.test.mjs:380-381 (also :508-509, :682-686, :826-827)
+      //       setIpcHandler("read_unindexed_observer_rows", async () => []);
+      //       setIpcHandler("index_observer_channel_id",    async () => null);
+      // ⇒ `[]` and `null` are what the UI already expects; this makes the bridge AGREE WITH THE UI'S OWN TESTS.
+      // ★ AND `deploy/checks/tauri-bridge-coverage.py` now makes this class of gap VISIBLE: it is a ratchet over
+      //   every Rust #[tauri::command] with no bridge case. Both names leave its missing list when this lands.
+      case "read_unindexed_observer_rows":
+        // Rust: Result<Vec<(String, String, i64)>, String> = (id, raw_json, created_at).
+        // An EMPTY LIST is the honest e2e state: the test archive has nothing unindexed to backfill.
+        return [];
+      case "index_observer_channel_id":
+        // Rust: writes one attribution row. A no-op is correct here — there is no archive DB to write to, and
+        // the caller only awaits completion.
+        return null;
+      // ⚠ THE THIRD AND LAST COMMAND ON THIS PATH. Found mechanically, not guessed: the observer path's own
+      // unit test stubs FIVE commands, so I DIFFED ITS STUB SET AGAINST THE BRIDGE'S CASE LIST — four were there
+      // (two of them because of this change) and this one was still absent.
+      //     features/agents/ui/useLoadArchivedObserverEvents.test.mjs stubs:
+      //       decrypt_observer_event · index_observer_channel_id · list_save_subscriptions ·
+      //       read_unindexed_observer_rows · ***read_archived_observer_events_for_channel***
+      // ⇒ FINDING IT HERE SAVED A WHOLE ~60-MINUTE SUITE CYCLE, WHICH IS WHAT DIFFING A SPEC'S OWN STUBS AGAINST
+      //   THE BRIDGE IS FOR.
+      // ★ AND `[]` IS THE RIGHT SHAPE, NOT A LAZY ONE: the spec returns `rows.map((r) => JSON.stringify(r))`,
+      //   and it treats a SHORT PAGE as the terminal condition (`// 1 row = short page` at :512). An empty page
+      //   is therefore BOTH the honest e2e state AND a clean termination of the cursor walk, rather than a
+      //   half-populated page that would leave the caller paging.
+      // Rust: read_archived_observer_events_for_channel(conn, identity, relay, channel_id, before_created_at,
+      //         before_id) -> a paged read, returned as JSON strings.
+      case "read_archived_observer_events_for_channel":
+        return [];
       // Archive sync runs natively; the bridge has no relay-backed backend to
       // drive, so these are accepted no-ops. Without them every AppShell mount
       // logs an unknown-command warning once the gate opens.
