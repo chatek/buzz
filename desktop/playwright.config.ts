@@ -183,6 +183,19 @@ export default defineConfig({
       use: {
         ...devices["Desktop Chrome"],
       },
+      // ⚠ THE `expect` BLOCK BELOW WAS IN `integration` AND NOT IN `smoke` — AND `smoke` IS THE PROJECT
+      // THAT RUNS 160 FILES AND ~1014 OF THE 1663 TESTS. MEASURED 2026-10-07 with a two-test probe spec
+      // (a `toBeVisible()` that can never succeed):
+      //     under THIS file, before this change :  Timeout: 5000ms   <- Playwright's DEFAULT
+      //     under a config that declares it in the project that runs the probe :  Timeout: 10000ms
+      // So every assertion in `smoke` was getting HALF the bound this file declares, and the failing
+      // artifacts all carry the `-smoke` project tag: huddle-transcription, video-attachment,
+      // inbox-live-update, remote-owned-mentions. THIS IS NOT A WIDENED BOUND - IT IS THE BOUND THE FILE
+      // ALREADY DECLARED, APPLIED TO THE PROJECT IT WAS MEANT FOR. ⚠ THE EFFECT IS MEASURABLE AND IT IS
+      // DISCLOSED: it moves ~1014 tests from the framework default 5000 to the declared 10000.
+      expect: {
+        timeout: process.env.CI ? 15_000 : 10_000,
+      },
     },
     {
       name: "integration",
