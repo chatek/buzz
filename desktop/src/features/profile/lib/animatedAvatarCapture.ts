@@ -179,10 +179,33 @@ let segmenterPromise: Promise<SegmenterHandle | null> | null = null;
 /**
  * Lazily create the selfie segmenter. Resolves to null when the CDN assets
  * are unreachable; a failed load is retried on the next call.
+ *
+ * ⚠⚠ AND "UNREACHABLE" INCLUDES A LOAD THAT NEVER ANSWERS. MEASURED 2026-10-06: the `.catch` below handles a
+ * REJECTION, and `createSegmenter()` fetches TWO EXTERNAL ASSETS —
+ *   `MEDIAPIPE_WASM_BASE`            -> https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm
+ *   `SELFIE_SEGMENTER_MODEL_URL`     -> https://storage.googleapis.com/mediapipe-models/…/selfie_segmenter.tflite
+ * — **SO A FETCH THAT HANGS RATHER THAN FAILS NEVER SETTLES EITHER WAY, AND THIS PROMISE NEVER RESOLVES.**
+ * ★ AND THE CONSEQUENCE IS NOT A SLOW SEGMENTER; IT IS A **STUCK RECORDING**:
+ *     `AnimatedAvatarCapture.tsx` awaits `recordAnimatedAvatarFrames`, whose FIRST statement is
+ *     `await loadSegmenter()` — so if this never settles, **NOT ONE FRAME IS EVER DRAWN** and the editor sits at
+ *     *"Recording... hold still-ish."* indefinitely, with no error and no way forward.
+ *   ⇒ reproduced in the e2e suite by `onboarding.spec.ts:1750`, which **fails alone** (`1 failed · 67 passed`),
+ *     and believed to be the same cause behind the `animated-avatar` and `voice-note` recording flakes.
+ * ***A LOAD THAT CAN HANG FOREVER IS A DEFECT INDEPENDENT OF ANY TEST.*** THE CONTRACT ABOVE ALREADY SAYS
+ *   "unreachable -> null"; this makes the code keep it, by BOUNDING THE WAIT AND FALLING BACK TO `null`, which
+ *   every caller already handles — the recording then runs **UNSEGMENTED** rather than never running at all.
+ * ⚠ AND THE BOUND IS DELIBERATELY GENEROUS (a cold CDN fetch on a slow link is not a failure) AND IS NOT A
+ *   TIMEOUT WIDENED TO MAKE A TEST GREEN — it converts an unbounded wait into the answer the contract promised.
  */
+const SEGMENTER_LOAD_TIMEOUT_MS = 15_000;
 function loadSegmenter(): Promise<SegmenterHandle | null> {
   if (!segmenterPromise) {
-    segmenterPromise = createSegmenter().catch(() => {
+    segmenterPromise = Promise.race([
+      createSegmenter(),
+      new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), SEGMENTER_LOAD_TIMEOUT_MS);
+      }),
+    ]).catch(() => {
       segmenterPromise = null;
       return null;
     });
