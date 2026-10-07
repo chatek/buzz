@@ -22,6 +22,7 @@ import {
   useUpdateChannelMutation,
 } from "@/features/channels/hooks";
 import { compareMembersByRole } from "@/features/channels/lib/memberUtils";
+import { CHANNELS_ALPHA_AFFORDANCES } from "@/features/channels/lib/channelsAlphaAffordances";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useChannelWorkflowsQuery } from "@/features/workflows/hooks";
 import { DEFAULT_EPHEMERAL_TTL_SECONDS } from "@/features/channels/lib/ephemeralChannel";
@@ -309,7 +310,11 @@ export function ChannelManagementSheet({
   const canvasPreview = hasCanvas
     ? getMarkdownPreviewText(canvasContent)
     : undefined;
-  const canOpenCanvas = hasCanvas || canEditNarrative;
+  // §7 HIDE (2026-10-06): canvases — no writer exists on either side.
+  // Hidden ≠ deleted; flip CHANNELS_ALPHA_AFFORDANCES.canvases to restore the
+  // Canvas row and view below.
+  const canOpenCanvas =
+    CHANNELS_ALPHA_AFFORDANCES.canvases && (hasCanvas || canEditNarrative);
 
   function handleEditDialogOpenChange(next: boolean) {
     if (next) {

@@ -56,11 +56,16 @@ export type ChannelPaneProps = {
   isFetchingOlder?: boolean;
   /** A companion huddle window presents the channel only as a transcript. */
   isHuddleTranscript?: boolean;
-  isJoining?: boolean;
   isSinglePanelView?: boolean;
   isSending: boolean;
   /** Terminal channel-history failure. Cached messages remain visible when present. */
   isTimelineError?: boolean;
+  /**
+   * The timeline failure's message (§3 D1): rendered through the ONE refusal
+   * renderer, so a private-channel refusal shows the ruled copy instead of a
+   * raw relay/Rust error string. Other error classes keep their message.
+   */
+  timelineErrorMessage?: string | null;
   isTimelineLoading: boolean;
   onRetryTimeline?: () => void;
   /** Newly-created message that should receive the one-shot conversation arrival motion. */
@@ -111,7 +116,6 @@ export type ChannelPaneProps = {
   onMarkUnread?: (message: TimelineMessage) => void;
   onMarkRead?: (message: TimelineMessage) => void;
   onExpandThreadReplies: (message: TimelineMessage) => void;
-  onJoinChannel?: () => Promise<void>;
   onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
   onOpenDm?: (pubkeys: string[]) => Promise<void> | void;
   onOpenMembers?: () => void;

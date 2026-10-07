@@ -6,6 +6,7 @@ import {
   useUpsertCachedChannel,
 } from "@/features/channels/hooks";
 import type { Channel } from "@/shared/api/types";
+import { formatChannelReadError } from "@/features/channels/lib/channelRefusal";
 import { useSendMessageMutation } from "@/features/messages/hooks";
 import { getKeyboardSearchSelection } from "@/features/profile/lib/userCandidateSearch";
 import { SelectedRecipientChip } from "@/features/profile/ui/SelectedRecipientChip";
@@ -271,9 +272,16 @@ export function NewMessageScreen() {
         });
       } catch (error) {
         preparedDirectMessageRef.current = null;
-        const message =
-          error instanceof Error ? error.message : "Failed to send message.";
-        if (isMountedRef.current) setSubmitErrorMessage(message);
+        // §3 (D1): a send refused with the private-channel wire refusal
+        // renders the ruled copy instead of the raw relay error string.
+        const message = formatChannelReadError(
+          error instanceof Error ? error.message : "",
+        );
+        if (isMountedRef.current) {
+          setSubmitErrorMessage(
+            message.length > 0 ? message : "Failed to send message.",
+          );
+        }
         throw error;
       }
 

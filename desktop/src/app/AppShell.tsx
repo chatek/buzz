@@ -36,6 +36,8 @@ import {
   useOpenDmMutation,
 } from "@/features/channels/hooks";
 import { useDmResurfaceFromMessages } from "@/features/channels/useDmResurfaceFromMessages";
+import { CHANNELS_ALPHA_AFFORDANCES } from "@/features/channels/lib/channelsAlphaAffordances";
+import { useCanCreateChannels } from "@/features/channels/lib/useCanCreateChannels";
 import { useUnreadChannels } from "@/features/channels/useUnreadChannels";
 import { useMembershipNotifications } from "@/features/channels/useMembershipNotifications";
 import { useFeedItemState } from "@/features/home/useFeedItemState";
@@ -250,6 +252,9 @@ export function AppShell() {
     refetchHomeFeedFromLiveSignal,
   );
   const { refetch: refetchChannels } = channelsQuery;
+  // §5 (D3): create-channel gating — see useCanCreateChannels for the admin
+  // signal and its limits (relay membership role; segment mapping UNKNOWN).
+  const canCreateChannels = useCanCreateChannels();
   const channelsErrorMessage =
     channelsQuery.error instanceof Error
       ? channelsQuery.error.message
@@ -921,12 +926,39 @@ export function AppShell() {
                           {...{ highPriorityUnreadChannelIds }}
                           previewActivityChannelIds={unreadThreadChannelIds}
                           unreadChannelCounts={unreadChannelCounts}
-                          mutedChannelIds={mutedChannelIds}
-                          onMuteChannel={muteChannel}
-                          onUnmuteChannel={unmuteChannel}
-                          starredChannelIds={starredChannelIds}
-                          onStarChannel={starChannel}
-                          onUnstarChannel={unstarChannel}
+                          /* §7 HIDE (2026-10-06): channel mutes + stars — unused
+                             on the live profile, zero keys. Hidden ≠ deleted:
+                             flip CHANNELS_ALPHA_AFFORDANCES to restore. */
+                          mutedChannelIds={
+                            CHANNELS_ALPHA_AFFORDANCES.mutes
+                              ? mutedChannelIds
+                              : undefined
+                          }
+                          onMuteChannel={
+                            CHANNELS_ALPHA_AFFORDANCES.mutes
+                              ? muteChannel
+                              : undefined
+                          }
+                          onUnmuteChannel={
+                            CHANNELS_ALPHA_AFFORDANCES.mutes
+                              ? unmuteChannel
+                              : undefined
+                          }
+                          starredChannelIds={
+                            CHANNELS_ALPHA_AFFORDANCES.stars
+                              ? starredChannelIds
+                              : undefined
+                          }
+                          onStarChannel={
+                            CHANNELS_ALPHA_AFFORDANCES.stars
+                              ? starChannel
+                              : undefined
+                          }
+                          onUnstarChannel={
+                            CHANNELS_ALPHA_AFFORDANCES.stars
+                              ? unstarChannel
+                              : undefined
+                          }
                         />
                       ) : null}
                       <TerminalContextOverrideProvider
@@ -967,7 +999,12 @@ export function AppShell() {
                       createForumMutation.isPending
                     }
                     onBrowseChannelJoin={handleBrowseChannelJoin}
-                    onBrowseChannelCreate={handleBrowseChannelCreate}
+                    /* §5 (D3): create is segment-admin only — the browser's
+                       create row is hidden for non-admins (the relay refuses
+                       a direct attempt regardless). */
+                    onBrowseChannelCreate={
+                      canCreateChannels ? handleBrowseChannelCreate : undefined
+                    }
                     onBrowseDialogOpenChange={handleBrowseDialogOpenChange}
                     onChannelManagementOpenChange={(open) => {
                       setIsChannelManagementOpen(open);

@@ -38,6 +38,16 @@ const getChannelsList = (): Promise<Channel[]> =>
 
 const STARTER_CHANNEL_SETUP_TOAST_ID = "starter-channel-setup-error";
 
+/**
+ * §4 (D2), ruled 2026-10-06: THE EMPTY WORKSPACE. A new bound user's
+ * directory starts EMPTY except DMs — no auto-created welcome room, no
+ * starter channels, no welcome team/canvas seeding. The seeding machinery
+ * (initializeStarterChannels + the Rust ensure_starter_channels command)
+ * stays intact; this switch stops it firing for any fresh bound user.
+ * Hidden ≠ deleted — flip to false to restore the seeded first-run flow.
+ */
+const CHANNELS_ALPHA_D2_EMPTY_WORKSPACE = true;
+
 export type ChannelInitResult =
   | { ok: true; focusChannelId?: string }
   | { ok: false; reason: string; focusChannelId?: string };
@@ -523,6 +533,13 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
         return Promise.resolve({ ok: true });
       }
 
+      // §4 (D2): nothing auto-fires for a fresh bound user — see the flag's
+      // doc comment. Report success so onboarding completes into the empty
+      // workspace (Home + the DM affordance) instead of blocking or retrying.
+      if (CHANNELS_ALPHA_D2_EMPTY_WORKSPACE) {
+        return Promise.resolve({ ok: true });
+      }
+
       const starterChannelsInitKey = `${starterChannelsCommunityScope}:${currentPubkey}`;
       const currentPromise = starterChannelsInitPromisesRef.current.get(
         starterChannelsInitKey,
@@ -573,6 +590,7 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
 
   React.useEffect(() => {
     if (
+      CHANNELS_ALPHA_D2_EMPTY_WORKSPACE ||
       onboardingGate.stage !== "ready" ||
       !currentPubkey ||
       !starterChannelsCommunityScope ||

@@ -96,8 +96,11 @@ const MEMBER_ROW_INSET_DIVIDER_CLASS =
   "after:pointer-events-none after:absolute after:bottom-0 after:left-[3.75rem] after:right-0 after:h-px after:bg-border/60 after:content-[''] last:after:hidden";
 
 function formatRoleLabel(member: ChannelMember, memberIsBot: boolean) {
+  // §2 (D7), ruled 2026-10-06: agents are role `bot` and render with a `bot`
+  // badge in the roster. The wire marks them role="bot" (channels.rs maps
+  // role=="bot" → is_agent); the label mirrors the ruled role name.
   if (memberIsBot) {
-    return "agent";
+    return "bot";
   }
 
   if (member.role === "owner" || member.role === "admin") {

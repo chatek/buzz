@@ -1,5 +1,4 @@
 import * as React from "react";
-import { LogIn } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
@@ -65,7 +64,6 @@ import * as agentSessionSelection from "@/features/channels/ui/agentSessionSelec
 import { usePrepareDmSendChannel } from "@/features/channels/ui/usePrepareDmSendChannel";
 import { useChannelPaneMessages } from "@/features/channels/ui/useChannelPaneMessages";
 import { useRoutedMessageEdit } from "@/features/channels/ui/useRoutedMessageEdit";
-import { Button } from "@/shared/ui/button";
 import { useRenderScopedReactionHydration } from "@/features/messages/lib/useRenderScopedReactionHydration";
 import { isWelcomeExperienceChannel as isWelcomeExperience } from "@/features/onboarding/welcome";
 import { useIsThreadPanelOverlay } from "@/shared/hooks/use-mobile";
@@ -101,10 +99,10 @@ export const ChannelPane = React.memo(function ChannelPane({
   isFollowingThread,
   isFollowingThreadById,
   isMessageUnreadById,
-  isJoining = false,
   isSinglePanelView = false,
   isSending,
   isTimelineError = false,
+  timelineErrorMessage,
   isTimelineLoading,
   onRetryTimeline,
   entranceMessageId = null,
@@ -138,7 +136,6 @@ export const ChannelPane = React.memo(function ChannelPane({
   onMarkUnread,
   onMarkRead,
   onExpandThreadReplies,
-  onJoinChannel,
   onOpenAgentSession,
   onOpenDm,
   onOpenMembers,
@@ -662,6 +659,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                   : "No channel selected"
               }
               isError={isTimelineError}
+              errorMessage={timelineErrorMessage}
               isLoading={isHuddleTranscript ? false : isTimelineLoading}
               onRetry={onRetryTimeline}
               entranceMessageId={entranceMessageId}
@@ -695,9 +693,14 @@ export const ChannelPane = React.memo(function ChannelPane({
               threadUnreadCounts={threadUnreadCounts}
             />
             {isNonMemberView ? (
+              /* §3 (D1), ruled 2026-10-06: a non-member of an OPEN channel
+                 gets a READ-ONLY view with NO join affordance and no
+                 membership implied. The former "Join to participate" button
+                 is hidden (hidden ≠ deleted); membership into a channel is
+                 segment-administered, so the banner states the fact only. */
               <div
-                data-testid="join-banner"
                 className="flex items-center gap-3 border-t border-border/80 bg-card/50 px-5 py-3"
+                data-testid="readonly-banner"
               >
                 <div className="flex min-w-0 flex-1 items-center gap-2 text-sm text-muted-foreground">
                   {activeChannel ? (
@@ -710,20 +713,10 @@ export const ChannelPane = React.memo(function ChannelPane({
                     Viewing{" "}
                     <span className="font-medium text-foreground">
                       #{activeChannel?.name}
-                    </span>
+                    </span>{" "}
+                    — read-only
                   </span>
                 </div>
-                <Button
-                  disabled={isJoining}
-                  onClick={() => {
-                    void onJoinChannel?.();
-                  }}
-                  size="sm"
-                  variant="default"
-                >
-                  <LogIn className="mr-1.5 h-4 w-4" />
-                  {isJoining ? "Joining..." : "Join to participate"}
-                </Button>
               </div>
             ) : (
               <div

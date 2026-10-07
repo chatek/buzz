@@ -7,6 +7,7 @@ import * as React from "react";
 import ts from "typescript";
 import * as helpers from "./useMentionSendFlow.helpers.ts";
 import * as draftStore from "../lib/useDrafts.ts";
+import * as channelRefusal from "../../channels/lib/channelRefusal.ts";
 
 // Execute the product hooks with real React effects/renders; only external
 // query/mutation/media dependencies are mocked. Deferred promises isolate the
@@ -139,6 +140,9 @@ export async function setup({ lifecycle = false } = {}) {
       useCanAddChannelMembers: () => true,
     },
     "@/features/channels/lib/channelMemberAdmission": {},
+    // §3 (D1): the real pure classifier — the send flow renders the ruled
+    // refusal copy through it.
+    "@/features/channels/lib/channelRefusal": channelRefusal,
     "@/features/messages/lib/dmThreadAgentMentionError": {
       dmThreadAgentMentionError: () => null,
     },

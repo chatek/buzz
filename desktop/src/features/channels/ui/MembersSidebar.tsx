@@ -218,6 +218,8 @@ export function MembersSidebar({
         formatMemberName(member, currentPubkey),
         member.displayName ?? "",
         profile?.displayName ?? "",
+        // §2 (D7): the roster badge reads "bot" — search both spellings.
+        memberIsBot ? "bot" : "",
         memberIsBot ? "agent" : "",
         member.role,
         normalizedPubkey,
@@ -421,6 +423,8 @@ export function MembersSidebar({
         formatMemberName(member, currentPubkey),
         member.displayName ?? "",
         profile?.displayName ?? "",
+        // §2 (D7): the roster badge reads "bot" — search both spellings.
+        memberIsBot ? "bot" : "",
         memberIsBot ? "agent" : "",
         member.role,
         normalizedPubkey,

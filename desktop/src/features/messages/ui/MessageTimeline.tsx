@@ -55,6 +55,13 @@ type MessageTimelineProps = {
     participants: DirectMessageIntroParticipant[];
   } | null;
   isError?: boolean;
+  /**
+   * The read failure's message (§3 D1): the error card renders it through the
+   * ONE refusal renderer, so a private-channel refusal shows the ruled copy
+   * ("This channel is private. Ask a segment admin for access.") instead of a
+   * raw relay/Rust error string. Other error classes keep their message.
+   */
+  errorMessage?: string | null;
   isLoading?: boolean;
   onRetry?: () => void;
   entranceMessageId?: string | null;
@@ -168,6 +175,7 @@ const MessageTimelineBase = React.forwardRef<
     mainEntries,
     threadSummaries,
     isError = false,
+    errorMessage,
     isLoading = false,
     onRetry,
     entranceMessageId = null,
@@ -812,7 +820,10 @@ const MessageTimelineBase = React.forwardRef<
                   <TimelineSkeleton rows={timelineSkeletonRows} />
                 ) : null}
                 {showTimelineError ? (
-                  <MessageTimelineErrorCard onRetry={onRetry} />
+                  <MessageTimelineErrorCard
+                    message={errorMessage}
+                    onRetry={onRetry}
+                  />
                 ) : null}
                 {activeDirectMessageIntro ? (
                   <div

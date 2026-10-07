@@ -29,7 +29,8 @@ type AppSidebarPinnedHeaderProps = {
   currentPubkey?: string;
   onBrowseChannels?: () => void;
   onCreateAgent: () => void;
-  onCreateChannel: () => void;
+  /** §5 (D3): optional — absent for non-admins (create is admin-only). */
+  onCreateChannel?: () => void;
   onOpenDm: (input: { pubkeys: string[] }) => Promise<void>;
   onOpenSearchResult: (hit: SearchHit, query: string) => void;
   onSelectChannel: (channelId: string) => void;

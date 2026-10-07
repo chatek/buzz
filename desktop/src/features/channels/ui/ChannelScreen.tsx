@@ -8,10 +8,8 @@ import { useChannelPaneHandlers } from "@/features/channels/useChannelPaneHandle
 import { useMessageEventProfilePubkeys } from "@/features/channels/useMessageEventProfilePubkeys";
 import { useMessageOwnerProfiles } from "@/features/channels/useMessageOwnerProfiles";
 import { useThreadTargetSync } from "@/features/channels/useThreadTargetSync";
-import {
-  useChannelMembersQuery,
-  useJoinChannelMutation,
-} from "@/features/channels/hooks";
+import { useChannelMembersQuery } from "@/features/channels/hooks";
+import { useCanCreateChannels } from "@/features/channels/lib/useCanCreateChannels";
 import {
   MSG_PREFIX,
   THREAD_PREFIX,
@@ -102,6 +100,9 @@ export function ChannelScreen({
   ...searchTarget
 }: ChannelScreenProps) {
   const queryClient = useQueryClient();
+  // §5 (D3): create-channel gating — see useCanCreateChannels for the admin
+  // signal and its limits.
+  const canCreateChannels = useCanCreateChannels();
   const { goHome } = useAppNavigation();
   const { activeCommunity } = useCommunities();
   const {
@@ -253,7 +254,10 @@ export function ChannelScreen({
   const toggleReactionMutation = useToggleReactionMutation();
   const deleteMessageMutation = useDeleteMessageMutation(activeChannel);
   const editMessageMutation = useEditMessageMutation(activeChannel);
-  const joinChannelMutation = useJoinChannelMutation(activeChannelId);
+  // §3 (D1): the join mutation's affordances are hidden — the non-member
+  // open-channel view is read-only with no join affordance (ChannelPane
+  // banner + header button both render the fact only). useJoinChannelMutation
+  // stays exported in features/channels/hooks.ts (hidden ≠ deleted).
   const {
     resolvedMessages,
     threadSummaries,
@@ -751,9 +755,7 @@ export function ChannelScreen({
         chromeWrapperRef={channelHeaderChromeRef}
         {...{ currentPubkey, headerEndActions }}
         isAddBotOpen={isAddBotOpen}
-        isJoining={joinChannelMutation.isPending}
         onAddBotOpenChange={setIsAddBotOpen}
-        onJoinChannel={joinChannelMutation.mutateAsync}
         onManageChannel={handleManageChannel}
         onToggleMembers={handleToggleMembers}
         showHeaderContent={!isSinglePanelView && !isHuddleTranscript}
@@ -772,8 +774,6 @@ export function ChannelScreen({
       currentPubkey,
       headerEndActions,
       isAddBotOpen,
-      joinChannelMutation.isPending,
-      joinChannelMutation.mutateAsync,
       handleManageChannel,
       handleToggleMembers,
       isSinglePanelView,
@@ -856,7 +856,11 @@ export function ChannelScreen({
                   {...{ onAddFiles }}
                   onAddAgent={handleOpenAddBot}
                   onBrowseChannels={openBrowseChannels}
-                  onCreateChannel={openCreateChannel}
+                  /* §5 (D3): create is segment-admin only — this affordance
+                     is hidden for non-admins. */
+                  onCreateChannel={
+                    canCreateChannels ? openCreateChannel : undefined
+                  }
                   onOpenMembers={handleOpenMembersSidebar}
                   isFetchingOlder={isFetchingOlder}
                   isHuddleTranscript={isHuddleTranscript}
@@ -882,7 +886,13 @@ export function ChannelScreen({
                   isFollowingThread={isNotifiedForEffectiveThread}
                   isSending={sendMessageMutation.isPending}
                   isSinglePanelView={isSinglePanelView}
-                  isTimelineError={messagesQuery.isError} isTimelineLoading={isTimelineLoading}
+                  isTimelineError={messagesQuery.isError}
+                  timelineErrorMessage={
+                    messagesQuery.error instanceof Error
+                      ? messagesQuery.error.message
+                      : null
+                  }
+                  isTimelineLoading={isTimelineLoading}
                   onRetryTimeline={() => void messagesQuery.refetch()} messages={timelineMessages}
                   threadSummaries={threadSummaries}
                   huddleThreadRepliesError={huddleThreadRepliesError}
@@ -970,8 +980,6 @@ export function ChannelScreen({
                   threadUnreadCounts={threadUnreadCounts}
                   threadReplyUnreadCounts={threadReplyUnreadCounts}
                   threadFirstUnreadReplyId={displayedThreadFirstUnreadReplyId}
-                  isJoining={joinChannelMutation.isPending}
-                  onJoinChannel={joinChannelMutation.mutateAsync}
                     typingPubkeys={humanTypingPubkeys}
                   />,
                   searchTarget,

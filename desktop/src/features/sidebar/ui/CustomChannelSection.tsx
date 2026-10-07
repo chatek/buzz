@@ -14,6 +14,7 @@ import { useRef, useState } from "react";
 import type * as React from "react";
 
 import type { ChannelSortMode } from "@/features/sidebar/lib/channelSortPreference";
+import { CHANNELS_ALPHA_AFFORDANCES } from "@/features/channels/lib/channelsAlphaAffordances";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -162,7 +163,10 @@ export function SectionActionsMenu({
 }) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const showSectionManagement = Boolean(onRenameSection || onDeleteSection);
-  const showSort = Boolean(sortMode && onSortModeChange);
+  // §7 HIDE (2026-10-06): sort — unused on the live profile, zero keys.
+  // Hidden ≠ deleted; flip CHANNELS_ALPHA_AFFORDANCES.sort to restore.
+  const showSort =
+    CHANNELS_ALPHA_AFFORDANCES.sort && Boolean(sortMode && onSortModeChange);
 
   return (
     <DropdownMenu onOpenChange={onOpenChange}>
@@ -597,7 +601,8 @@ export function CustomChannelSection({
   onMarkSectionRead: () => void;
   onAssignChannel: (channelId: string, sectionId: string) => void;
   onUnassignChannel: (channelId: string) => void;
-  onCreateSectionForChannel: (channelId: string) => void;
+  /** Optional: §7 HIDE — sections off means no per-channel section affordance. */
+  onCreateSectionForChannel?: (channelId: string) => void;
   onCreateChannel: () => void;
   onRenameSection: () => void;
   onDeleteSection: () => void;

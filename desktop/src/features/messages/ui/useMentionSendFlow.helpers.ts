@@ -9,6 +9,7 @@ import type { PreparedBackgroundLinkPreviews } from "@/features/messages/lib/lin
 import type { DraftMentionRef } from "@/features/messages/lib/useDrafts";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { MENTION_REFERENCE_TAG } from "@/shared/lib/resolveMentionNames";
+import { formatChannelSendError } from "@/features/channels/lib/channelRefusal";
 
 export { MENTION_REFERENCE_TAG };
 
@@ -158,7 +159,10 @@ export function getErrorMessage(error: unknown, fallback: string) {
 }
 
 export function formatMessageSendError(error: unknown) {
-  return `Message failed to send: ${getErrorMessage(error, "Unknown error")}`;
+  // §3 (D1), ruled 2026-10-06: a send refused with the private-channel wire
+  // refusal renders the ruled copy (access, not a retry, is the fix) via the
+  // ONE refusal classifier; every other error keeps this wording.
+  return formatChannelSendError(error, "Unknown error");
 }
 
 export function uniqueNormalizedPubkeys(pubkeys: Iterable<string>) {

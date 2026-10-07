@@ -44,6 +44,10 @@ import {
   resolvePreviewTags,
   uniqueNormalizedPubkeys,
 } from "./useMentionSendFlow.helpers";
+import {
+  CHANNEL_PRIVATE_REFUSAL_COPY,
+  isChannelPrivateRefusal,
+} from "@/features/channels/lib/channelRefusal";
 import { buildAgentAddressMentionTags } from "@/features/messages/lib/agentAddressMention.mjs";
 import { AgentMentionAuthorizationError } from "@/features/messages/lib/agentMentionRevalidation";
 import type { UseMentionSendFlowOptions } from "./useMentionSendFlow.types";
@@ -681,7 +685,10 @@ export function useMentionSendFlow({
       } catch (error) {
         restoreComposerAfterFailure();
         toast.error(
-          getErrorMessage(error, "Could not send message. Please retry."),
+          // §3 (D1): a refusal renders the ruled copy, not the raw reason.
+          isChannelPrivateRefusal(error)
+            ? CHANNEL_PRIVATE_REFUSAL_COPY
+            : getErrorMessage(error, "Could not send message. Please retry."),
         );
       } finally {
         if (draft.preparedLinkPreviews) {

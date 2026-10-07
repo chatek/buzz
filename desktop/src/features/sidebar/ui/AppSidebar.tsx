@@ -49,6 +49,10 @@ import {
   SectionQuickAction,
 } from "@/features/sidebar/ui/CustomChannelSection";
 import { CreateChannelDialog } from "@/features/sidebar/ui/CreateChannelDialog";
+import { ChannelRefusalNotice } from "@/features/channels/ui/ChannelRefusalNotice";
+import { isChannelPrivateRefusal } from "@/features/channels/lib/channelRefusal";
+import { CHANNELS_ALPHA_AFFORDANCES } from "@/features/channels/lib/channelsAlphaAffordances";
+import { useCanCreateChannels } from "@/features/channels/lib/useCanCreateChannels";
 import { SidebarProfileCard } from "@/features/sidebar/ui/SidebarProfileCard";
 import { HuddleProfileControl } from "@/features/huddle";
 import type {
@@ -62,6 +66,7 @@ import {
   useSidebarLoadingShape,
 } from "@/features/sidebar/ui/sidebarLoadingSkeleton";
 import { useDeferredModalOpen } from "@/shared/ui/deferredModalOpen";
+import { Button } from "@/shared/ui/button";
 import { SidebarUpdateCard } from "@/features/settings/SidebarUpdateCard";
 import { useUpdaterContext } from "@/features/settings/hooks/UpdaterProvider";
 import { shouldShowSidebarUpdateCard } from "@/features/settings/sidebarUpdateCardVisibility";
@@ -502,6 +507,24 @@ export function AppSidebar({
     [assignChannel, onBrowseChannels],
   );
 
+  // §5 (D3): create is segment-admin only — the affordance is HIDDEN for
+  // non-admins (hidden ≠ deleted; see useCanCreateChannels for the admin
+  // signal and its limits). The backend refuses a direct attempt regardless.
+  const canCreateChannels = useCanCreateChannels();
+  const createChannelHandler = canCreateChannels
+    ? handleOpenCreateChannel
+    : undefined;
+  const createForumHandler = canCreateChannels
+    ? () => openCreateDialog("forum")
+    : undefined;
+  // §7 HIDE (2026-10-06): sidebar sections — unused on the live profile.
+  const visibleChannelSections = CHANNELS_ALPHA_AFFORDANCES.sections
+    ? channelSections
+    : [];
+  const visibleOnCreateSectionForChannel = CHANNELS_ALPHA_AFFORDANCES.sections
+    ? handleCreateSectionForChannel
+    : undefined;
+
   return (
     <Sidebar
       className="!z-[100] !border-r-0"
@@ -529,7 +552,7 @@ export function AppSidebar({
           }
           onBrowseChannels={onBrowseChannels}
           onCreateAgent={onCreateAgent}
-          onCreateChannel={handleOpenCreateChannel}
+          onCreateChannel={createChannelHandler}
           onOpenDm={onOpenDm}
           onOpenSearchResult={onOpenSearchResult}
           onSelectChannel={onSelectChannel}
@@ -582,6 +605,10 @@ export function AppSidebar({
 
               {!isLoading ? (
                 <>
+                  {/* §7 HIDE (2026-10-06): stars — unused on the live profile.
+                      AppShell stops passing starred ids/handlers when the
+                      flag is off, so this block renders nothing; it stays
+                      wired for a verdict reversal (hidden ≠ deleted). */}
                   {starredChannels.length > 0 ? (
                     <ChannelGroupSection
                       hasUnread={starredChannels.some((c) =>
@@ -621,13 +648,13 @@ export function AppSidebar({
                   ) : null}
                   <SidebarDndContext
                     channels={channels}
-                    sections={channelSections}
+                    sections={visibleChannelSections}
                     sectionIds={sectionIds}
                     onAssignChannel={assignChannel}
                     onUnassignChannel={unassignChannel}
                     onReorderSections={reorderSections}
                   >
-                    {channelSections.map((section, idx) => (
+                    {visibleChannelSections.map((section, idx) => (
                       <CustomChannelSection
                         key={section.id}
                         section={section}
@@ -642,10 +669,10 @@ export function AppSidebar({
                         activeWorkingByChannelId={activeWorkingByChannelId}
                         selectedChannelId={selectedChannelId}
                         unreadChannelIds={unreadChannelIds}
-                        sections={channelSections}
+                        sections={visibleChannelSections}
                         assignments={channelAssignments}
                         isFirst={idx === 0}
-                        isLast={idx === channelSections.length - 1}
+                        isLast={idx === visibleChannelSections.length - 1}
                         sortMode={sortModeFor(sectionSortGroupKey(section.id))}
                         onSortModeChange={(mode) =>
                           setSortModeFor(sectionSortGroupKey(section.id), mode)
@@ -669,7 +696,7 @@ export function AppSidebar({
                         onAssignChannel={assignChannel}
                         onUnassignChannel={unassignChannel}
                         onCreateSectionForChannel={
-                          handleCreateSectionForChannel
+                          visibleOnCreateSectionForChannel
                         }
                         onCreateChannel={() =>
                           handleCreateChannelInSection(section.id)
@@ -689,7 +716,9 @@ export function AppSidebar({
                       />
                     ))}
                     <ChannelGroupSection
-                      draggable
+                      /* §7 HIDE (2026-10-06): sections — drag-to-section is a
+                         section affordance; off when sections are off. */
+                      draggable={CHANNELS_ALPHA_AFFORDANCES.sections}
                       hasUnread={unreadChannelIds.size > 0}
                       isCollapsed={collapsedGroups.channels}
                       isActiveChannel={selectedView === "channel"}
@@ -712,11 +741,13 @@ export function AppSidebar({
                       selectedChannelId={selectedChannelId}
                       title="Channels"
                       unreadChannelIds={unreadChannelIds}
-                      sections={channelSections}
+                      sections={visibleChannelSections}
                       assignments={channelAssignments}
                       onAssignChannel={assignChannel}
                       onUnassignChannel={unassignChannel}
-                      onCreateSectionForChannel={handleCreateSectionForChannel}
+                      onCreateSectionForChannel={
+                        visibleOnCreateSectionForChannel
+                      }
                       mutedChannelIds={mutedChannelIds}
                       onMuteChannel={onMuteChannel}
                       onUnmuteChannel={onUnmuteChannel}
@@ -741,7 +772,7 @@ export function AppSidebar({
                       }
                       actionsTestId="section-actions-forums"
                       listTestId="forum-list"
-                      onCreateClick={() => openCreateDialog("forum")}
+                      onCreateClick={createForumHandler}
                       onMarkAllRead={onMarkAllChannelsRead}
                       onMarkChannelRead={onMarkChannelRead}
                       onMarkChannelUnread={onMarkChannelUnread}
@@ -803,10 +834,45 @@ export function AppSidebar({
                 </>
               ) : null}
 
-              {errorMessage && !relayConnectionCard.hasRelayUnreachableError ? (
-                <div className="px-3 py-2 text-sm text-destructive">
-                  {errorMessage}
+              {/* §4 (D2): the EMPTY WORKSPACE. A bound user with no channels
+                  sees the true copy and a DM affordance — no auto-created
+                  welcome room, no starter channels (those are gated off in
+                  features/onboarding/hooks.ts). DMs stay reachable (§7: DMs
+                  are IN) via this affordance and the Direct messages section's
+                  "New message" quick action. */}
+              {!isLoading && channels.length === 0 ? (
+                <div
+                  className="px-3 py-4"
+                  data-testid="sidebar-empty-workspace"
+                >
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    You have no channels yet. An admin can add you to one; you
+                    can always message your agent.
+                  </p>
+                  <Button
+                    className="mt-3"
+                    data-testid="sidebar-empty-workspace-dm"
+                    onClick={onNewMessage}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    Message your agent
+                  </Button>
                 </div>
+              ) : null}
+
+              {/* §3 (D1): a refused channel read renders through the ONE
+                  refusal renderer — never a raw relay/Rust error string.
+                  Other error classes keep today's banner. */}
+              {errorMessage && !relayConnectionCard.hasRelayUnreachableError ? (
+                isChannelPrivateRefusal(errorMessage) ? (
+                  <ChannelRefusalNotice variant="sidebar" />
+                ) : (
+                  <div className="px-3 py-2 text-sm text-destructive">
+                    {errorMessage}
+                  </div>
+                )
               ) : null}
             </div>
           </SidebarContent>

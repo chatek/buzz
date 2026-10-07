@@ -7,6 +7,7 @@ import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useChannelsQuery } from "@/features/channels/hooks";
 import { useOpenChannelDirectoryQuery } from "@/features/channels/openChannelDirectory";
 import { ChannelScreen } from "@/features/channels/ui/ChannelScreen";
+import { ChannelRouteUnresolvedView } from "@/features/channels/ui/ChannelRouteUnresolvedView";
 import { HuddleStartingView } from "@/features/huddle/components/HuddleStartingView";
 import { huddleWindowChannelId } from "@/features/huddle/lib/huddleWindow";
 import {
@@ -306,6 +307,14 @@ export function ChannelRouteScreen({
         targetMessageId={targetMessageId}
       />
     );
+  }
+
+  if (!activeChannel && !isHuddleTranscript) {
+    // §3 (D1): the routed channel id resolved to nothing the caller can see —
+    // neither the member list nor the open-channel directory carries it. One
+    // directed roster probe distinguishes the private-channel refusal (403,
+    // ruled copy) from an unknown id (200-empty, rendered as does-not-exist).
+    return <ChannelRouteUnresolvedView channelId={channelId} />;
   }
 
   return (
