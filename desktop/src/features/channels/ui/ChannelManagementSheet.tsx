@@ -22,7 +22,7 @@ import {
   useUpdateChannelMutation,
 } from "@/features/channels/hooks";
 import { compareMembersByRole } from "@/features/channels/lib/memberUtils";
-import { CHANNELS_ALPHA_AFFORDANCES } from "@/features/channels/lib/channelsAlphaAffordances";
+import { useChannelsAlphaAffordances } from "@/features/channels/lib/relayChannelCaps";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useChannelWorkflowsQuery } from "@/features/workflows/hooks";
 import { DEFAULT_EPHEMERAL_TTL_SECONDS } from "@/features/channels/lib/ephemeralChannel";
@@ -227,6 +227,11 @@ export function ChannelManagementSheet({
     setActiveView("summary");
   }, [cancelDeferredModalOpen, detail, open]);
 
+  // §7 canvases verdict — now the relay's (RULING C(i): NIP-11 `channels`,
+  // CHANNELS_ALPHA_AFFORDANCES the fallback); called before the early return
+  // so hook order is unconditional.
+  const alphaAffordances = useChannelsAlphaAffordances();
+
   if (!channel) {
     return null;
   }
@@ -311,10 +316,10 @@ export function ChannelManagementSheet({
     ? getMarkdownPreviewText(canvasContent)
     : undefined;
   // §7 HIDE (2026-10-06): canvases — no writer exists on either side.
-  // Hidden ≠ deleted; flip CHANNELS_ALPHA_AFFORDANCES.canvases to restore the
-  // Canvas row and view below.
+  // Hidden ≠ deleted; the verdict is the relay's (see alphaAffordances above,
+  // RULING C(i)) — restore by advertising canvases=true on the relay.
   const canOpenCanvas =
-    CHANNELS_ALPHA_AFFORDANCES.canvases && (hasCanvas || canEditNarrative);
+    alphaAffordances.canvases && (hasCanvas || canEditNarrative);
 
   function handleEditDialogOpenChange(next: boolean) {
     if (next) {

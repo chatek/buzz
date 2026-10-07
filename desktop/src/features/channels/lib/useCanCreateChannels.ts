@@ -6,19 +6,27 @@ import { canManageCommunityMembers } from "@/shared/api/relayMembers";
  * create is SEGMENT-ADMIN only; non-admins get no create affordance (hidden,
  * with a marker — the backend refuses a direct API attempt regardless).
  *
- * ⚠ HOW THE CLIENT LEARNS "ADMIN" TODAY, AND ITS LIMITS (measured, do not
- * paper over): the only admin signal the desktop client has is the relay
- * membership snapshot — NIP-43 kind:13534 (`useMyRelayMembershipLookupQuery`),
- * where `role === "owner" || "admin"` is already the client's admin gate for
- * member management and the moderation queue. Whether THAT role is the same
- * fact the channels registry enforces as "segment admin" is UNKNOWN to this
- * client: nothing in the fork wires the registry's segment-admin fact into
- * kind:13534. Two consequences, accepted deliberately:
- *   1. On relays that do not publish kind:13534 the snapshot is absent, this
- *      gate reads "not admin", and NOBODY sees a create affordance — the UI
- *      stays D3-compliant (no non-admin affordance) at the cost of the
- *      affordance for real admins until the segment fact reaches the client.
- *   2. The relay is the authority either way: a hidden button is presentation,
+ * ⚠ HOW THE CLIENT LEARNS "ADMIN" (updated 2026-10-07, lane chan-caps): the
+ * admin signal is still the relay membership snapshot — NIP-43 kind:13534
+ * (`useMyRelayMembershipLookupQuery`), `role === "owner" || "admin"`. What
+ * changed is the SNAPSHOT'S SOURCE: the Go gateway now AUTHORS a 13534 from
+ * the segment-admin union reader (CHANNELS_SERVICE_ACL §2, RULING A(iii) —
+ * the same reader that enforces 9007; buzz-gateway/internal/api/
+ * membership_snapshot.go), on BOTH doors the client reads: the WS REQ
+ * intercept and POST /query. Before that, the gateway never authored one, so
+ * on the channels estate every 13534 read answered nothing and NOBODY saw
+ * create. The fork's Rust relay keeps authoring its own 13534 from its
+ * relay_members table (per-community roles, unchanged this lane).
+ * Residuals, named:
+ *   1. A relay that publishes NO snapshot still gates this to false for
+ *      everybody — D3-compliant (no non-admin affordance) at the cost of the
+ *      affordance for real admins; the client renders the D3 marker state,
+ *      never a lie.
+ *   2. The same snapshot feeds member management (SettingsView) and the join
+ *      alerts; on a gateway that admits 13534 but refuses 9030-9032 those
+ *      surfaces render affordances the server will not honour — a PRE-EXISTING
+ *      coupling of the one admin gate, out of scope here.
+ *   3. The relay is the authority either way: a hidden button is presentation,
  *      never enforcement.
  */
 export function useCanCreateChannels(): boolean {

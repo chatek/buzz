@@ -36,7 +36,10 @@ import {
   useOpenDmMutation,
 } from "@/features/channels/hooks";
 import { useDmResurfaceFromMessages } from "@/features/channels/useDmResurfaceFromMessages";
-import { CHANNELS_ALPHA_AFFORDANCES } from "@/features/channels/lib/channelsAlphaAffordances";
+import {
+  useChannelsAlphaAffordances,
+  useRelayChannelCapsSync,
+} from "@/features/channels/lib/relayChannelCaps";
 import { useCanCreateChannels } from "@/features/channels/lib/useCanCreateChannels";
 import { useUnreadChannels } from "@/features/channels/useUnreadChannels";
 import { useMembershipNotifications } from "@/features/channels/useMembershipNotifications";
@@ -255,6 +258,14 @@ export function AppShell() {
   // §5 (D3): create-channel gating — see useCanCreateChannels for the admin
   // signal and its limits (relay membership role; segment mapping UNKNOWN).
   const canCreateChannels = useCanCreateChannels();
+  // RULING C(i) (§5, CHANNELS_SERVICE_ACL.md): the affordance verdicts derive
+  // from the ACTIVE relay's NIP-11 `channels` set (fetched once per community
+  // connect), with CHANNELS_ALPHA_AFFORDANCES as the fallback — "turn DMs on
+  // for this segment" is a server config change, not a desktop release. The
+  // sync hook is mounted HERE, the shell, once; the leaf reads are the hook
+  // below.
+  useRelayChannelCapsSync(communitiesHook.activeCommunity?.relayUrl);
+  const alphaAffordances = useChannelsAlphaAffordances();
   const channelsErrorMessage =
     channelsQuery.error instanceof Error
       ? channelsQuery.error.message
@@ -928,36 +939,28 @@ export function AppShell() {
                           unreadChannelCounts={unreadChannelCounts}
                           /* §7 HIDE (2026-10-06): channel mutes + stars — unused
                              on the live profile, zero keys. Hidden ≠ deleted:
-                             flip CHANNELS_ALPHA_AFFORDANCES to restore. */
+                             the server's NIP-11 `channels` set (RULING C(i))
+                             derives the verdict now, with
+                             CHANNELS_ALPHA_AFFORDANCES as the fallback. */
                           mutedChannelIds={
-                            CHANNELS_ALPHA_AFFORDANCES.mutes
-                              ? mutedChannelIds
-                              : undefined
+                            alphaAffordances.mutes ? mutedChannelIds : undefined
                           }
                           onMuteChannel={
-                            CHANNELS_ALPHA_AFFORDANCES.mutes
-                              ? muteChannel
-                              : undefined
+                            alphaAffordances.mutes ? muteChannel : undefined
                           }
                           onUnmuteChannel={
-                            CHANNELS_ALPHA_AFFORDANCES.mutes
-                              ? unmuteChannel
-                              : undefined
+                            alphaAffordances.mutes ? unmuteChannel : undefined
                           }
                           starredChannelIds={
-                            CHANNELS_ALPHA_AFFORDANCES.stars
+                            alphaAffordances.stars
                               ? starredChannelIds
                               : undefined
                           }
                           onStarChannel={
-                            CHANNELS_ALPHA_AFFORDANCES.stars
-                              ? starChannel
-                              : undefined
+                            alphaAffordances.stars ? starChannel : undefined
                           }
                           onUnstarChannel={
-                            CHANNELS_ALPHA_AFFORDANCES.stars
-                              ? unstarChannel
-                              : undefined
+                            alphaAffordances.stars ? unstarChannel : undefined
                           }
                         />
                       ) : null}

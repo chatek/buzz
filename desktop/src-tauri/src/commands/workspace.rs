@@ -98,6 +98,44 @@ pub async fn fetch_workspace_icon(
     Ok(doc.icon.filter(|icon| !icon.is_empty()))
 }
 
+/// Fetch the relay's advertised CHANNEL capability set from its NIP-11 relay
+/// information document (RULING C(i), CHANNELS_SERVICE_ACL.md §5).
+///
+/// Returns the RAW `channels` field as JSON — defensive parsing is the TS side's
+/// job (`channelsAlphaAffordances.ts`), so one parser serves the app, the tests
+/// and any future consumer. `None` (absent / malformed document / unreachable
+/// relay) is the contract's "fall back to the compile-time table": the same
+/// three-case shape `fetch_workspace_icon` states for the icon.
+#[tauri::command]
+pub async fn fetch_workspace_channel_caps(
+    relay_url: String,
+    state: State<'_, AppState>,
+) -> Result<Option<serde_json::Value>, String> {
+    let http_url = relay::relay_http_base_url(&relay_url);
+    let Ok(response) = state
+        .http_client
+        .get(&http_url)
+        .header("Accept", "application/nostr+json")
+        .send()
+        .await
+    else {
+        return Ok(None);
+    };
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    #[derive(Deserialize)]
+    struct RelayInfoChannels {
+        #[serde(default)]
+        channels: Option<serde_json::Value>,
+    }
+    let doc = response
+        .json::<RelayInfoChannels>()
+        .await
+        .unwrap_or(RelayInfoChannels { channels: None });
+    Ok(doc.channels)
+}
+
 #[derive(Serialize)]
 pub struct ActiveWorkspaceInfo {
     relay_url: String,

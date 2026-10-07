@@ -51,7 +51,7 @@ import {
 import { CreateChannelDialog } from "@/features/sidebar/ui/CreateChannelDialog";
 import { ChannelRefusalNotice } from "@/features/channels/ui/ChannelRefusalNotice";
 import { isChannelPrivateRefusal } from "@/features/channels/lib/channelRefusal";
-import { CHANNELS_ALPHA_AFFORDANCES } from "@/features/channels/lib/channelsAlphaAffordances";
+import { useChannelsAlphaAffordances } from "@/features/channels/lib/relayChannelCaps";
 import { useCanCreateChannels } from "@/features/channels/lib/useCanCreateChannels";
 import { SidebarProfileCard } from "@/features/sidebar/ui/SidebarProfileCard";
 import { HuddleProfileControl } from "@/features/huddle";
@@ -511,6 +511,10 @@ export function AppSidebar({
   // non-admins (hidden ≠ deleted; see useCanCreateChannels for the admin
   // signal and its limits). The backend refuses a direct attempt regardless.
   const canCreateChannels = useCanCreateChannels();
+  // RULING C(i): the §7 verdicts derive from the active relay's NIP-11
+  // `channels` set (the AppShell mounts the fetch); this table-reading hook
+  // falls back to CHANNELS_ALPHA_AFFORDANCES when the relay states nothing.
+  const alphaAffordances = useChannelsAlphaAffordances();
   const createChannelHandler = canCreateChannels
     ? handleOpenCreateChannel
     : undefined;
@@ -518,10 +522,10 @@ export function AppSidebar({
     ? () => openCreateDialog("forum")
     : undefined;
   // §7 HIDE (2026-10-06): sidebar sections — unused on the live profile.
-  const visibleChannelSections = CHANNELS_ALPHA_AFFORDANCES.sections
+  const visibleChannelSections = alphaAffordances.sections
     ? channelSections
     : [];
-  const visibleOnCreateSectionForChannel = CHANNELS_ALPHA_AFFORDANCES.sections
+  const visibleOnCreateSectionForChannel = alphaAffordances.sections
     ? handleCreateSectionForChannel
     : undefined;
 
@@ -718,7 +722,7 @@ export function AppSidebar({
                     <ChannelGroupSection
                       /* §7 HIDE (2026-10-06): sections — drag-to-section is a
                          section affordance; off when sections are off. */
-                      draggable={CHANNELS_ALPHA_AFFORDANCES.sections}
+                      draggable={alphaAffordances.sections}
                       hasUnread={unreadChannelIds.size > 0}
                       isCollapsed={collapsedGroups.channels}
                       isActiveChannel={selectedView === "channel"}
@@ -787,50 +791,56 @@ export function AppSidebar({
                       onDeleteChannel={requestDeleteChannel}
                     />
                   </FeatureGate>
-                  <SidebarSection
-                    action={
-                      <div className="absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5">
-                        <SectionQuickAction
-                          label="New message"
-                          onClick={onNewMessage}
-                          testId="section-actions-dms-quick-create"
-                        />
-                        <SectionActionsMenu
-                          sectionLabel="direct messages"
-                          testId="section-actions-dms"
-                          onOpenChange={setDmActionsMenuOpen}
-                          onNewMessage={onNewMessage}
-                          sortMode={sortModeFor("dms")}
-                          onSortModeChange={(mode) =>
-                            setSortModeFor("dms", mode)
-                          }
-                        />
-                      </div>
-                    }
-                    dmParticipantsByChannelId={dmParticipantsByChannelId}
-                    isCollapsed={collapsedGroups.directMessages}
-                    isActiveChannel={selectedView === "channel"}
-                    activeWorkingByChannelId={activeWorkingByChannelId}
-                    items={sortedDirectMessages}
-                    channelLabels={dmChannelLabels}
-                    onHideDm={onHideDm}
-                    onMarkChannelRead={onMarkChannelRead}
-                    onMarkChannelUnread={onMarkChannelUnread}
-                    onSelectChannel={onSelectChannel}
-                    onToggleCollapsed={() =>
-                      toggleCollapsedGroup("directMessages")
-                    }
-                    presenceByChannelId={dmPresenceByChannelId}
-                    selectedChannelId={selectedChannelId}
-                    testId="dm-list"
-                    title="Direct messages"
-                    sectionActionsOpen={dmActionsMenuOpen}
-                    unreadChannelCounts={unreadChannelCounts}
-                    unreadChannelIds={unreadChannelIds}
-                    mutedChannelIds={mutedChannelIds}
-                    onMuteChannel={onMuteChannel}
-                    onUnmuteChannel={onUnmuteChannel}
-                  />
+                  {/* §7 DMs are IN — but the verdict is now the RELAY's (RULING C(i)): the
+                      NIP-11 `channels` set decides, CHANNELS_ALPHA_AFFORDANCES
+                      is the fallback. dm=false on the relay hides the whole DM
+                      affordance — section, quick actions — without a rebuild. */}
+                  {alphaAffordances.directMessages ? (
+                    <SidebarSection
+                      action={
+                        <div className="absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5">
+                          <SectionQuickAction
+                            label="New message"
+                            onClick={onNewMessage}
+                            testId="section-actions-dms-quick-create"
+                          />
+                          <SectionActionsMenu
+                            sectionLabel="direct messages"
+                            testId="section-actions-dms"
+                            onOpenChange={setDmActionsMenuOpen}
+                            onNewMessage={onNewMessage}
+                            sortMode={sortModeFor("dms")}
+                            onSortModeChange={(mode) =>
+                              setSortModeFor("dms", mode)
+                            }
+                          />
+                        </div>
+                      }
+                      dmParticipantsByChannelId={dmParticipantsByChannelId}
+                      isCollapsed={collapsedGroups.directMessages}
+                      isActiveChannel={selectedView === "channel"}
+                      activeWorkingByChannelId={activeWorkingByChannelId}
+                      items={sortedDirectMessages}
+                      channelLabels={dmChannelLabels}
+                      onHideDm={onHideDm}
+                      onMarkChannelRead={onMarkChannelRead}
+                      onMarkChannelUnread={onMarkChannelUnread}
+                      onSelectChannel={onSelectChannel}
+                      onToggleCollapsed={() =>
+                        toggleCollapsedGroup("directMessages")
+                      }
+                      presenceByChannelId={dmPresenceByChannelId}
+                      selectedChannelId={selectedChannelId}
+                      testId="dm-list"
+                      title="Direct messages"
+                      sectionActionsOpen={dmActionsMenuOpen}
+                      unreadChannelCounts={unreadChannelCounts}
+                      unreadChannelIds={unreadChannelIds}
+                      mutedChannelIds={mutedChannelIds}
+                      onMuteChannel={onMuteChannel}
+                      onUnmuteChannel={onUnmuteChannel}
+                    />
+                  ) : null}
                 </>
               ) : null}
 
@@ -839,26 +849,32 @@ export function AppSidebar({
                   welcome room, no starter channels (those are gated off in
                   features/onboarding/hooks.ts). DMs stay reachable (§7: DMs
                   are IN) via this affordance and the Direct messages section's
-                  "New message" quick action. */}
+                  "New message" quick action — and the verdict is the RELAY's
+                  (RULING C(i)): dm=false on the relay drops BOTH the sentence
+                  and the button, because copy that promises a DM the relay
+                  disabled would be a lie, not a fallback. */}
               {!isLoading && channels.length === 0 ? (
                 <div
                   className="px-3 py-4"
                   data-testid="sidebar-empty-workspace"
                 >
                   <p className="text-sm leading-6 text-muted-foreground">
-                    You have no channels yet. An admin can add you to one; you
-                    can always message your agent.
+                    {alphaAffordances.directMessages
+                      ? "You have no channels yet. An admin can add you to one; you can always message your agent."
+                      : "You have no channels yet. An admin can add you to one."}
                   </p>
-                  <Button
-                    className="mt-3"
-                    data-testid="sidebar-empty-workspace-dm"
-                    onClick={onNewMessage}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    Message your agent
-                  </Button>
+                  {alphaAffordances.directMessages ? (
+                    <Button
+                      className="mt-3"
+                      data-testid="sidebar-empty-workspace-dm"
+                      onClick={onNewMessage}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      Message your agent
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
 

@@ -2,7 +2,7 @@ import { ChevronDown, Plus } from "lucide-react";
 import * as React from "react";
 
 import { TemplateFormDialog } from "@/features/settings/ui/ChannelTemplatesSettingsCard";
-import { CHANNELS_ALPHA_AFFORDANCES } from "@/features/channels/lib/channelsAlphaAffordances";
+import { useChannelsAlphaAffordances } from "@/features/channels/lib/relayChannelCaps";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import {
@@ -42,6 +42,8 @@ export function CreateChannelFormFields({
 }: {
   form: CreateChannelFormState;
 }) {
+  // §7 templates verdict — now the relay's (RULING C(i)), read below.
+  const alphaAffordances = useChannelsAlphaAffordances();
   const { channelKind, kindLabel, isCreating } = form;
   const [isCreateTemplateOpen, setIsCreateTemplateOpen] = React.useState(false);
   const selectedTemplate = form.templates.find(
@@ -147,9 +149,10 @@ export function CreateChannelFormFields({
       />
 
       {/* §7 HIDE (2026-10-06): channel templates — no writer exists on
-          either side. Hidden ≠ deleted; flip CHANNELS_ALPHA_AFFORDANCES
-          .templates to restore the picker + TemplateFormDialog below. */}
-      {CHANNELS_ALPHA_AFFORDANCES.templates ? (
+          either side. Hidden ≠ deleted; the verdict is now the relay's
+          (RULING C(i): NIP-11 `channels`, CHANNELS_ALPHA_AFFORDANCES the
+          fallback) — restore by advertising templates=true on the relay. */}
+      {alphaAffordances.templates ? (
         <div
           className="flex min-h-12 items-center justify-between gap-4 rounded-xl border border-input bg-background px-3 py-3"
           data-testid="create-channel-template-container"

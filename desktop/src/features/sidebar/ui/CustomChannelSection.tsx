@@ -14,7 +14,7 @@ import { useRef, useState } from "react";
 import type * as React from "react";
 
 import type { ChannelSortMode } from "@/features/sidebar/lib/channelSortPreference";
-import { CHANNELS_ALPHA_AFFORDANCES } from "@/features/channels/lib/channelsAlphaAffordances";
+import { useChannelsAlphaAffordances } from "@/features/channels/lib/relayChannelCaps";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -164,9 +164,11 @@ export function SectionActionsMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const showSectionManagement = Boolean(onRenameSection || onDeleteSection);
   // §7 HIDE (2026-10-06): sort — unused on the live profile, zero keys.
-  // Hidden ≠ deleted; flip CHANNELS_ALPHA_AFFORDANCES.sort to restore.
+  // Hidden ≠ deleted; the verdict is now the relay's (RULING C(i): NIP-11
+  // `channels` set, with CHANNELS_ALPHA_AFFORDANCES as the fallback).
+  const alphaAffordances = useChannelsAlphaAffordances();
   const showSort =
-    CHANNELS_ALPHA_AFFORDANCES.sort && Boolean(sortMode && onSortModeChange);
+    alphaAffordances.sort && Boolean(sortMode && onSortModeChange);
 
   return (
     <DropdownMenu onOpenChange={onOpenChange}>

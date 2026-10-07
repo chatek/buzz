@@ -6,6 +6,15 @@
  * affordance at its render sites; the components, hooks and wire kinds stay
  * intact so a verdict reversal is a one-line flip. Every render site that
  * consults one of these flags carries a marker comment naming the ruling.
+ *
+ * RULING C(i) (CHANNELS_SERVICE_ACL.md §5, commit feaa8054): this table is the
+ * FALLBACK. The primary source is the relay's NIP-11 `channels` capability set,
+ * fetched once per community connect (`relayChannelCaps.ts`) — "turn DMs on for
+ * this segment" is a server config change, not a desktop release. Render sites
+ * therefore read the DERIVED set through `useChannelsAlphaAffordances()`
+ * (relayChannelCaps.ts), not this constant; with the field absent — or
+ * malformed, or the relay unreachable — the derived set is this table verbatim,
+ * so today's behaviour is byte-identical.
  */
 export const CHANNELS_ALPHA_AFFORDANCES = {
   /**
@@ -28,3 +37,80 @@ export const CHANNELS_ALPHA_AFFORDANCES = {
 } as const;
 
 export type ChannelAlphaAffordance = keyof typeof CHANNELS_ALPHA_AFFORDANCES;
+
+/** The full affordance set: every key present, frozen, readonly. */
+export type ChannelAlphaAffordanceSet = typeof CHANNELS_ALPHA_AFFORDANCES;
+
+/**
+ * The subset the server may state. Built ONLY by `parseChannelsCapabilities`,
+ * so unknown keys, non-boolean values and malformed documents can never reach
+ * a render site through this type.
+ */
+export type ServerChannelCapabilities = Partial<
+  Record<ChannelAlphaAffordance, boolean>
+>;
+
+/**
+ * NIP-11 `channels` wire key → affordance key. The wire spells DMs `dm`
+ * (`internal/nip01/server.go` ChannelCapabilities — field names are WIRE
+ * CONTRACT); the client's table predates the ruling and says `directMessages`.
+ * `agent_activity` is deliberately absent: the server advertises it as
+ * deferred|on|off (a tri-state, not an affordance) and no client surface
+ * consumes it yet — UNKNOWN, named, not invented.
+ */
+const WIRE_KEY_TO_AFFORDANCE = {
+  dm: "directMessages",
+  sections: "sections",
+  stars: "stars",
+  mutes: "mutes",
+  sort: "sort",
+  templates: "templates",
+  canvases: "canvases",
+} as const satisfies Record<string, ChannelAlphaAffordance>;
+
+/**
+ * Parse the NIP-11 `channels` capability field DEFENSIVELY (RULING C(i)).
+ *
+ *   absent / not an object  → null (whole table falls back)
+ *   malformed VALUE         → that key falls back (never invented)
+ *   unknown key             → ignored
+ *   partial object          → only the known boolean keys it carries
+ *
+ * Never throws, never coerces: a value that is not exactly a boolean is not a
+ * verdict, and an absent verdict is the compile-time table's to give.
+ */
+export function parseChannelsCapabilities(
+  raw: unknown,
+): ServerChannelCapabilities | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  let parsed: ServerChannelCapabilities | null = null;
+  for (const [wireKey, affordance] of Object.entries(WIRE_KEY_TO_AFFORDANCE)) {
+    const value = record[wireKey];
+    if (typeof value === "boolean") {
+      parsed ??= {};
+      parsed[affordance] = value;
+    }
+  }
+  return parsed;
+}
+
+/**
+ * Derive the effective affordance set: every key the server stated wins, every
+ * key it did not (or could not) state keeps the compile-time verdict.
+ * `null` returns THE fallback object itself, so the absent-field render is
+ * byte-identical to the pre-C(i) build, not merely deeply-equal.
+ */
+export function deriveChannelsAlphaAffordances(
+  server: ServerChannelCapabilities | null,
+): ChannelAlphaAffordanceSet {
+  if (!server) {
+    return CHANNELS_ALPHA_AFFORDANCES;
+  }
+  return Object.freeze({
+    ...CHANNELS_ALPHA_AFFORDANCES,
+    ...server,
+  });
+}
