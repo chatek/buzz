@@ -38,8 +38,20 @@ export const CHANNELS_ALPHA_AFFORDANCES = {
 
 export type ChannelAlphaAffordance = keyof typeof CHANNELS_ALPHA_AFFORDANCES;
 
-/** The full affordance set: every key present, frozen, readonly. */
-export type ChannelAlphaAffordanceSet = typeof CHANNELS_ALPHA_AFFORDANCES;
+/**
+ * The full affordance set: every key present, frozen, readonly.
+ *
+ * ⚠ TYPED AS `boolean`, NOT as the fallback's literal `true`/`false`. The first
+ * remote build of the C(i) consumer FAILED on exactly this
+ * (channelsAlphaAffordances.ts(112,3) error TS2322): `typeof
+ * CHANNELS_ALPHA_AFFORDANCES` gives the LITERAL types, and spreading the
+ * server's Partial<Record<..., boolean>> widens `directMessages` to `boolean`,
+ * which is not assignable to `true`. The workstation's tsc accepted it and the
+ * build host's did not — a type error that only a build caught, which is why
+ * the artefact step exists. The fallback const keeps its literals (they are
+ * assignable to boolean); only the SET's type widens.
+ */
+export type ChannelAlphaAffordanceSet = Readonly<Record<ChannelAlphaAffordance, boolean>>;
 
 /**
  * The subset the server may state. Built ONLY by `parseChannelsCapabilities`,
