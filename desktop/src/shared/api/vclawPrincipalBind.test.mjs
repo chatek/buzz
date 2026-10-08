@@ -41,6 +41,38 @@ describe("the bind report is read field by field", () => {
     assert.equal(report.npub, DEVICE);
   });
 
+  it("reads the stamp verdict from a bound report without downgrading the bind", () => {
+    const stamped = classifyVclawBindReport(
+      { outcome: "bound", status: 201, npub: DEVICE, npubStamped: true },
+      DEVICE,
+    );
+    assert.equal(stamped.state, "bound");
+    assert.equal(stamped.npubStamped, true);
+
+    const unstamped = classifyVclawBindReport(
+      { outcome: "bound", status: 201, npub: DEVICE, npubStamped: false },
+      DEVICE,
+    );
+    // NEGATIVE CONTROL: the stamp verdict must NOT downgrade the bind. The
+    // forward never fails the bind; surfacing the warning is the caller's job.
+    assert.equal(unstamped.state, "bound");
+    assert.equal(unstamped.npubStamped, false);
+
+    // ABSENT and UNREADABLE are both "not stated" — never a guess.
+    assert.equal(
+      classifyVclawBindReport({ outcome: "bound" }, DEVICE).npubStamped,
+      null,
+    );
+    for (const bad of ["false", 0, null]) {
+      assert.equal(
+        classifyVclawBindReport({ outcome: "bound", npubStamped: bad }, DEVICE)
+          .npubStamped,
+        null,
+        `${JSON.stringify(bad)} must not be read as a verdict`,
+      );
+    }
+  });
+
   it("reads an idempotent second bind as bound AND idempotent", () => {
     const report = classifyVclawBindReport(
       { outcome: "already_bound", npub: DEVICE },

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { KIND_NIP43_LEAVE_REQUEST, leaveCommunity } from "./leaveCommunity.ts";
+import {
+  KIND_NIP43_LEAVE_REQUEST,
+  leaveCommunity,
+  leaveEveryCommunity,
+} from "./leaveCommunity.ts";
 
 const signedEvent = {
   id: "event-id",
@@ -171,5 +175,68 @@ test("turns an inactive relay timeout into an actionable leave error", async () 
       }),
     ),
     /Timed out while leaving the community\. Try again\./,
+  );
+});
+
+test("sign-out shape: leaves every community and reports failures without short-circuiting", async () => {
+  const calls = [];
+  const outcomes = await leaveEveryCommunity(
+    [
+      { relayUrl: "wss://a.example" },
+      { relayUrl: "wss://active.example" },
+      { relayUrl: "wss://c.example" },
+    ],
+    "wss://active.example",
+    dependencies({
+      requiresMembership: async (relayUrl) => {
+        calls.push(["requiresMembership", relayUrl]);
+        return true;
+      },
+      sign: async (input) => {
+        calls.push(["sign", input.kind]);
+        return { ...signedEvent, ...input };
+      },
+      publishActive: async () => {
+        calls.push(["publishActive"]);
+        throw new Error("invalid: relay owner cannot leave");
+      },
+      createRelayClient: (relayUrl) => ({
+        publishEvent: async () => {
+          calls.push(["publish", relayUrl]);
+          if (relayUrl === "wss://c.example") {
+            throw new Error("Timed out publishing to observer relay.");
+          }
+        },
+        disconnect: () => calls.push(["disconnect", relayUrl]),
+      }),
+    }),
+  );
+
+  // EVERY relay was attempted, in order, even though the middle one refused.
+  assert.deepEqual(
+    calls
+      .filter(([name]) => name === "requiresMembership")
+      .map(([, url]) => url),
+    ["wss://a.example", "wss://active.example", "wss://c.example"],
+  );
+
+  // A refused leave is REPORTED, not thrown, so the caller can still run the
+  // local clear after every relay has been attempted.
+  assert.deepEqual(
+    outcomes.map((outcome) => [outcome.status, outcome.relayUrl]),
+    [
+      ["left", "wss://a.example"],
+      ["failed", "wss://active.example"],
+      ["failed", "wss://c.example"],
+    ],
+  );
+
+  // The inactive client was still torn down after its failed publish — the
+  // ordering contract: a refused leave must not leave a relay client dangling.
+  assert.ok(
+    calls.some(
+      ([name, relayUrl]) =>
+        name === "disconnect" && relayUrl === "wss://c.example",
+    ),
   );
 });

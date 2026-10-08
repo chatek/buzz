@@ -1,10 +1,10 @@
 import * as React from "react";
 import { toast } from "sonner";
 
-import { NsecMaskedDisplay } from "@/features/onboarding/ui/NsecMaskedDisplay";
-import { getNsec, signOut } from "@/shared/api/tauriIdentity";
+import { copyNsecToClipboard, signOut } from "@/shared/api/tauriIdentity";
 import { vclawSignOut } from "@/shared/api/vclawOidc";
 import { useCommunities } from "@/features/communities/useCommunities";
+import { leaveEveryCommunity } from "@/features/communities/leaveCommunity";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -56,6 +56,24 @@ export const COMMUNITIES_LEFT_COPY =
   "This device has also left the community or communities it had joined.";
 
 /**
+ * The community half of a sign-out, stated honestly: the promise in
+ * [`COMMUNITIES_LEFT_COPY`] is only true when every leave was accepted. A
+ * refused or timed-out leave is a WARNING, never a silent success.
+ */
+export function describeCommunityLeaveOutcomes(
+  total: number,
+  failed: number,
+): string {
+  if (failed === 0) return COMMUNITIES_LEFT_COPY;
+  if (failed === total) {
+    return total === 1
+      ? "This device could not be confirmed as having left its community — it may still be a member on the relay."
+      : `This device could not be confirmed as having left any of its ${total} communities — it may still be a member on those relays.`;
+  }
+  return `This device left ${total - failed} of ${total} communities, but could not leave ${failed} — it may still be a member there.`;
+}
+
+/**
  * TWO actions, and they must never collapse into one again.
  *
  * ── WHAT WAS WRONG (operator question, 2026-10-03) ─────────────────────────────
@@ -89,8 +107,9 @@ export const COMMUNITIES_LEFT_COPY =
  */
 export function SignOutSection() {
   // ⚠ THE SHARED CONTEXT, not a second instance: `useCommunities` reads `CommunitiesContext`, so
-  // clearing here clears the SAME list the rest of the app renders from.
-  const { clearCommunities } = useCommunities();
+  // clearing here clears the SAME list the rest of the app renders from, and leaving here leaves
+  // the SAME communities the rail is showing.
+  const { communities, activeCommunity, clearCommunities } = useCommunities();
 
   // ── Non-destructive: the vclaw session ──────────────────────────────────────
   const [isVclawPending, setIsVclawPending] = React.useState(false);
@@ -100,13 +119,11 @@ export function SignOutSection() {
   const [isPending, setIsPending] = React.useState(false);
 
   // Backup gate.
-  const [nsec, setNsec] = React.useState<string | null>(null);
+  const [copyState, setCopyState] = React.useState<
+    "idle" | "copying" | "copied"
+  >("idle");
   const [nsecError, setNsecError] = React.useState<string | null>(null);
-  const [isNsecLoading, setIsNsecLoading] = React.useState(false);
   const [hasConfirmedBackup, setHasConfirmedBackup] = React.useState(false);
-  // Guards against a late-resolving getNsec() repopulating state after the
-  // dialog closes.
-  const fetchCancelledRef = React.useRef(false);
 
   // Typed-confirmation gate.
   const [confirmText, setConfirmText] = React.useState("");
@@ -116,49 +133,45 @@ export function SignOutSection() {
   const canDelete = hasConfirmedBackup && isPhraseConfirmed && !isPending;
 
   function resetDialogState() {
-    fetchCancelledRef.current = true;
-    setNsec(null);
+    setCopyState("idle");
     setNsecError(null);
-    setIsNsecLoading(false);
     setHasConfirmedBackup(false);
     setConfirmText("");
   }
 
-  React.useEffect(() => {
-    return () => {
-      fetchCancelledRef.current = true;
-      setNsec(null);
-    };
-  }, []);
-
-  async function openDialog() {
+  function openDialog() {
     setIsOpen(true);
-    fetchCancelledRef.current = false;
-    setIsNsecLoading(true);
+    setCopyState("idle");
+    setNsecError(null);
+  }
+
+  /**
+   * Copy the private key WITHOUT it ever being held in React state. The
+   * clipboard write happens in Rust (`copy_nsec_to_clipboard`), which is the
+   * whole point: the renderer that shows remote message content must not hold
+   * the full nsec (key-lifecycle audit #5).
+   */
+  async function handleCopyNsec() {
+    setCopyState("copying");
     setNsecError(null);
     try {
-      const value = await getNsec();
-      if (!fetchCancelledRef.current) setNsec(value);
+      await copyNsecToClipboard();
+      setCopyState("copied");
     } catch (err) {
-      if (!fetchCancelledRef.current)
-        setNsecError(
-          err instanceof Error
-            ? err.message
-            : "Failed to retrieve private key.",
-        );
-    } finally {
-      if (!fetchCancelledRef.current) setIsNsecLoading(false);
+      setCopyState("idle");
+      setNsecError(
+        err instanceof Error ? err.message : "Failed to copy private key.",
+      );
     }
   }
 
   /**
    * Sign out of vclaw: the small action.
    *
-   * Nothing here reads, clears, or moves the identity key — the one command it
-   * crosses the boundary with is `vclaw_oidc_sign_out`, which owns the cached
-   * vclaw credential and nothing else. The verdict is reported honestly: a
-   * sign-out whose revocation was refused or never sent is a warning, not a
-   * success, because the refresh token is then still live.
+   * Nothing here reads, clears, or moves the identity key. The IdP revocation
+   * and the per-community relay leaves are reported honestly: a sign-out whose
+   * revocation or leave was refused or never sent is a warning, not a success,
+   * because the credential is then still live.
    */
   async function handleVclawSignOut() {
     setIsVclawPending(true);
@@ -166,15 +179,28 @@ export function SignOutSection() {
       const report = await vclawSignOut();
       // ⚠ LEAVING THE COMMUNITIES IS PART OF SIGNING OUT (operator request, 2026-10-04):
       // *"I clicked 'Signout' but it shall also mean 'Leave community' or leave any logged in
-      // communities on VClawBuzz."* Clearing AFTER the revocation attempt, so the IdP call still
-      // happens even if the local clear throws - a live refresh token must not survive because a
-      // list failed to empty.
+      // communities on VClawBuzz."* Every held community is left BEFORE the local clear, and a
+      // refused/timed-out leave is COLLECTED rather than thrown, so the local clear still runs
+      // after the revocation attempt and after the leaves — a live refresh token or a live
+      // membership must not survive because a list failed to empty (mirrors the existing
+      // revocation-before-clear ordering comment).
+      const leaveOutcomes = await leaveEveryCommunity(
+        communities,
+        activeCommunity?.relayUrl,
+      );
       clearCommunities();
-      const description = `${describeVclawSignOut(report)} ${IDENTITY_UNTOUCHED_COPY} ${COMMUNITIES_LEFT_COPY}`;
-      if (isRevocationUnresolved(report)) {
-        toast.warning("Signed out on this device — the IdP was not updated.", {
-          description,
-        });
+      const failedLeaves = leaveOutcomes.filter(
+        (outcome) => outcome.status === "failed",
+      ).length;
+      const description = `${describeVclawSignOut(report)} ${IDENTITY_UNTOUCHED_COPY} ${describeCommunityLeaveOutcomes(leaveOutcomes.length, failedLeaves)}`;
+      if (isRevocationUnresolved(report) || failedLeaves > 0) {
+        const title =
+          isRevocationUnresolved(report) && failedLeaves > 0
+            ? "Signed out on this device — the IdP was not updated and some communities were not left."
+            : isRevocationUnresolved(report)
+              ? "Signed out on this device — the IdP was not updated."
+              : "Signed out on this device — some communities were not left.";
+        toast.warning(title, { description });
       } else {
         toast.success("Signed out of vclaw.", { description });
       }
@@ -307,18 +333,31 @@ export function SignOutSection() {
             <p className="text-sm font-medium">
               1. Confirm you can restore your identity
             </p>
-            {isNsecLoading ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : nsecError ? (
+            <Button
+              data-testid="signout-copy-key"
+              disabled={copyState === "copying"}
+              onClick={() => void handleCopyNsec()}
+              type="button"
+              variant="outline"
+            >
+              {copyState === "copying"
+                ? "Copying…"
+                : copyState === "copied"
+                  ? "Copied to clipboard"
+                  : "Copy private key"}
+            </Button>
+            {nsecError ? (
               <p
                 className="text-sm text-destructive"
                 data-testid="signout-nsec-error"
               >
                 {nsecError}
               </p>
-            ) : nsec ? (
-              <NsecMaskedDisplay nsec={nsec} />
             ) : null}
+            <p className="text-xs leading-5 text-muted-foreground">
+              The key is copied by the desktop app — it never enters the
+              settings screen itself.
+            </p>
             <label
               className="flex cursor-pointer items-start gap-2.5 text-sm has-[button:disabled]:cursor-not-allowed has-[button:disabled]:opacity-60"
               data-testid="signout-backup-confirm-label"

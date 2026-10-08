@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { motion, useReducedMotion } from "motion/react";
+import { toast } from "sonner";
 
 import {
   getIdentity,
@@ -21,6 +22,10 @@ import {
 } from "../vclawSignIn";
 import type { OrgVerdict } from "../vclawOrg";
 import type { VclawBindReport } from "@/shared/api/vclawPrincipalBind";
+import {
+  describeUnstampedBindWarning,
+  isUnstampedBind,
+} from "../lib/vclawBindCopy";
 import { VclawBindNotice } from "./VclawBindNotice";
 import { VclawOrgField } from "./VclawOrgField";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
@@ -314,6 +319,12 @@ export function MachineOnboardingFlow({
       // `bound` is the only state that reaches here; recording it keeps the notice's own gate (it
       // renders nothing for `bound`) the single place that decides what a success looks like.
       setVclawBind(bind);
+      // A bound device whose segment stamp did NOT land is still a success (the forward never
+      // fails the bind), but it must not be silent: surface the consequence as a warning rather
+      // than a second error surface.
+      if (isUnstampedBind(bind)) {
+        toast.warning(describeUnstampedBindWarning());
+      }
       setVclawResult(
         `Signed in to vclaw as ${account.subject}` +
           (account.email ? ` (${account.email})` : "") +

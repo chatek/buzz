@@ -90,6 +90,13 @@ export type VclawBindReport = {
   idempotent: boolean;
   /** The npub the row was written for (64 hex), when the native layer was told one. */
   npub: string | null;
+  /**
+   * Whether the estate's vgate segment stamp landed, when it said so as a
+   * boolean. `null` means "not stated". `false` is NOT a hard failure — the
+   * forward never fails the bind — but it is surfaced as the named warning
+   * "bound, but cannot administer channels until it re-binds".
+   */
+  npubStamped: boolean | null;
 };
 
 /** The native layer's outcome vocabulary. Anything else is `unreadable`, never a guess. */
@@ -133,6 +140,7 @@ function unreadable(reason: string | null, status: number | null = null) {
     status,
     idempotent: false,
     npub: null,
+    npubStamped: null,
   };
 }
 
@@ -166,6 +174,11 @@ export function classifyVclawBindReport(
   const npubAbsent =
     npubField === undefined || npubField === null || npubField === "";
   const npub = isNpubHex(npubField) ? npubField : null;
+  // A stamp verdict is only a boolean. Anything else is "not stated", never a
+  // guess — reading a string as "stamped" would re-silence the exact failure
+  // this field exists to surface (key-lifecycle audit #4).
+  const npubStamped =
+    typeof report.npubStamped === "boolean" ? report.npubStamped : null;
 
   if (BOUND_OUTCOMES.has(outcome ?? "")) {
     // A SUCCESS CLAIM MUST BE SELF-CONSISTENT. A 4xx/5xx status beside "bound" is a contradiction; a
@@ -191,6 +204,7 @@ export function classifyVclawBindReport(
       status,
       idempotent: outcome === "already_bound" || report.idempotent === true,
       npub,
+      npubStamped,
     };
   }
 
@@ -201,6 +215,7 @@ export function classifyVclawBindReport(
     status,
     idempotent: report.idempotent === true,
     npub,
+    npubStamped,
   };
 }
 

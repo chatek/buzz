@@ -553,6 +553,7 @@ pub fn run() {
             title_bar_double_click,
             get_identity,
             get_nsec,
+            copy_nsec_to_clipboard,
             generate_backup_passphrase,
             create_ncryptsec_backup,
             verify_ncryptsec_backup,

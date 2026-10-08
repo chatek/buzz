@@ -130,6 +130,11 @@ pub struct VclawBindReport {
     /// the binding store is keyed, or `None`. A value that is not that is dropped rather than
     /// passed on: the front end treats a named-but-unreadable npub as a report it cannot act on.
     pub npub: Option<String>,
+    /// Whether the estate's vgate segment stamp (B(i)) landed, when the estate said so as a
+    /// boolean. `None` means "not stated" — an older estate, or an answer that established no row.
+    /// `Some(false)` is NOT a hard failure (the forward never fails the bind): the front end
+    /// surfaces it as the named warning "bound, but cannot administer channels until it re-binds".
+    pub npub_stamped: Option<bool>,
 }
 
 impl VclawBindReport {
@@ -140,6 +145,7 @@ impl VclawBindReport {
             status: None,
             idempotent: false,
             npub: None,
+            npub_stamped: None,
         }
     }
 
@@ -182,6 +188,13 @@ fn read_npub(value: Option<&serde_json::Value>) -> Option<String> {
     } else {
         None
     }
+}
+
+/// The stamp verdict: a boolean, and nothing else. A string or number named `npub_stamped` is
+/// dropped rather than read as a verdict — the estate's only words are `true` and `false`, and a
+/// value this layer cannot parse must not become "stamped" or "unstamped" by guessing.
+fn read_npub_stamped(value: Option<&serde_json::Value>) -> Option<bool> {
+    value.and_then(serde_json::Value::as_bool)
 }
 
 /// The estate's own refusal reason, if it sent one that really is a code.
@@ -245,6 +258,7 @@ fn read_outcome(body: &serde_json::Value) -> Option<&'static str> {
 fn classify_bind_response(status: u16, body: &serde_json::Value) -> VclawBindReport {
     let reason = read_reason(body);
     let npub = read_npub(body.get("npub"));
+    let npub_stamped = read_npub_stamped(body.get("npub_stamped"));
     let idempotent = body
         .get("idempotent")
         .and_then(serde_json::Value::as_bool)
@@ -265,6 +279,7 @@ fn classify_bind_response(status: u16, body: &serde_json::Value) -> VclawBindRep
             // whether or not the flag agrees; the flag alone is never enough to say so.
             idempotent: idempotent || outcome == OUTCOME_ALREADY_BOUND,
             npub,
+            npub_stamped,
         };
     }
 
@@ -478,14 +493,25 @@ mod tests {
             status: Some(200),
             idempotent: false,
             npub: Some("deadbeef".repeat(8)),
+            npub_stamped: Some(true),
         };
         let value = serde_json::to_value(&report).expect("report serializes");
         let object = value.as_object().expect("report is an object");
         let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["idempotent", "npub", "outcome", "reason", "status"]);
+        assert_eq!(
+            keys,
+            [
+                "idempotent",
+                "npub",
+                "npubStamped",
+                "outcome",
+                "reason",
+                "status"
+            ]
+        );
         // AND NOTHING ELSE: no `detail`, no body echo, no place a credential could arrive.
-        assert_eq!(object.len(), 5);
+        assert_eq!(object.len(), 6);
     }
 
     #[test]
@@ -524,6 +550,38 @@ mod tests {
         assert!(no_flag.idempotent);
         let fresh = classify_bind_response(200, &json!({ "outcome": "bound" }));
         assert!(!fresh.idempotent);
+    }
+
+    #[test]
+    fn a_bound_report_carries_the_stamp_verdict() {
+        // RED -> GREEN (key-lifecycle audit #4): the classifier used to read `npub` and never
+        // `npub_stamped`, so a bound device whose vgate segment stamp silently failed read exactly
+        // like one whose stamp landed. The verdict now travels on the report; the front end turns
+        // `Some(false)` into the named "bound but cannot administer channels" warning.
+        let stamped = classify_bind_response(
+            200,
+            &json!({ "outcome": "bound", "status": 200, "npub_stamped": true }),
+        );
+        assert_eq!(stamped.outcome, OUTCOME_BOUND);
+        assert_eq!(stamped.npub_stamped, Some(true));
+
+        let unstamped = classify_bind_response(
+            200,
+            &json!({ "outcome": "bound", "status": 200, "npub_stamped": false }),
+        );
+        assert_eq!(unstamped.outcome, OUTCOME_BOUND);
+        assert_eq!(unstamped.npub_stamped, Some(false));
+
+        // NEGATIVE CONTROL: only a boolean is a verdict. A string/number/absent value must read as
+        // "not stated", never as "stamped" or "unstamped" — guessing either way would re-silence
+        // the very failure this field exists to surface.
+        for bad in [json!("false"), json!(0), json!(null)] {
+            let report = classify_bind_response(
+                200,
+                &json!({ "outcome": "bound", "status": 200, "npub_stamped": bad }),
+            );
+            assert_eq!(report.npub_stamped, None, "{bad} must not travel");
+        }
     }
 
     #[test]

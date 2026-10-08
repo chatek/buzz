@@ -12759,6 +12759,26 @@ export function maybeInstallE2eTauriMocks() {
         }
         return "nsec1mock000000000000000000000000000000000000000000000000000000";
       }
+      case "copy_nsec_to_clipboard": {
+        // The settings reveal's replacement: the command copies natively and
+        // returns nothing. It shares the nsec error mocks so a spec can drive
+        // the "copy failed" surface without introducing a second mock knob.
+        const nsecSequence = activeConfig?.mock?.nsecErrors;
+        if (nsecSequence && nsecSequence.length > 0) {
+          const idx = Math.min(nsecCallCount, nsecSequence.length - 1);
+          nsecCallCount++;
+          const entry = nsecSequence[idx];
+          if (entry !== null) {
+            throw new Error(entry);
+          }
+          return undefined;
+        }
+        const nsecError = activeConfig?.mock?.nsecError;
+        if (nsecError) {
+          throw new Error(nsecError);
+        }
+        return undefined;
+      }
       case "persist_current_identity": {
         // Persist the ephemeral key: clears only the lost flag. The locked flag
         // is cleared only by import_identity; production rejects

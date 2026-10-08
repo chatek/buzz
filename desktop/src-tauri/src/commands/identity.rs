@@ -6,6 +6,7 @@ use tauri::State;
 
 use crate::{
     app_state::AppState,
+    commands::clipboard::with_clipboard,
     models::IdentityInfo,
     nostr_bind,
     relay::{self, relay_api_base_url_with_override, relay_ws_url_with_override},
@@ -220,6 +221,45 @@ pub fn get_nsec(state: State<'_, AppState>) -> Result<String, String> {
     keys.secret_key()
         .to_bech32()
         .map_err(|error| format!("encode nsec: {error}"))
+}
+
+/// Copy the private key to the OS clipboard WITHOUT handing it to the webview.
+///
+/// This is the settings reveal's replacement for [`get_nsec`] (key-lifecycle
+/// audit #5): the renderer that shows remote message content must never hold
+/// the full nsec in React state, because any script running there could read
+/// it. The command reads the key natively, encodes it, and writes it to the
+/// clipboard on the main thread — the value crosses no IPC boundary in either
+/// direction. It fails closed through `signing_keys()`, so a keyring-locked or
+/// identity-lost device cannot copy an ephemeral key.
+///
+/// `get_nsec` itself stays: the hidden onboarding backup ceremony
+/// (`BackupStep.tsx` / onboarding `BackupTestFlow.tsx`, gated behind
+/// `VCLAW_SIGN_IN_ONLY`) still renders the key text directly, so it is the
+/// one remaining hard dependency.
+#[tauri::command]
+pub async fn copy_nsec_to_clipboard(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let nsec = state
+        .signing_keys()?
+        .secret_key()
+        .to_bech32()
+        .map_err(|error| format!("encode nsec: {error}"))?;
+
+    // arboard requires main-thread access on macOS; relay the result back
+    // through a one-shot channel, mirroring `copy_text_to_clipboard`.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+    let clipboard_app = app.clone();
+    app.run_on_main_thread(move || {
+        let result = with_clipboard(&clipboard_app, |clipboard| clipboard.set_text(nsec));
+        let _ = tx.send(result);
+    })
+    .map_err(|error| format!("main thread dispatch failed: {error}"))?;
+
+    rx.recv()
+        .map_err(|_| "clipboard result channel closed unexpectedly".to_string())?
 }
 
 /// Generate a passphrase for a new encrypted backup (EFF short wordlist, OS
@@ -643,11 +683,11 @@ pub async fn sign_nostr_identity_binding(
         &expires_at,
     )?;
 
-    let keys = state
-        .keys
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone();
+    // Route through `signing_keys()` like every other signer in this module: a
+    // keyring-locked or identity-lost device must refuse to sign rather than sign
+    // with the ephemeral boot key. Locking `state.keys` directly here would bypass
+    // that fail-closed gate (key-lifecycle audit #6).
+    let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let event = build_nostr_identity_binding_event(

@@ -51,6 +51,48 @@ async function publishLeaveRequest(
   }
 }
 
+/**
+ * One community's outcome after a sign-out-shaped "leave every community" pass.
+ *
+ * `left` and `already-absent` are both a clean local clear; `failed` is the one
+ * the caller must NOT report as a success — the relay refused or never accepted
+ * the signed kind-28936 leave request, so this device may still be a member.
+ */
+export type LeaveCommunityOutcome =
+  | { status: "left"; relayUrl: string }
+  | { status: "already-absent"; relayUrl: string }
+  | { status: "failed"; relayUrl: string; error: unknown };
+
+/**
+ * Leave EVERY community this device holds, one at a time, WITHOUT short-
+ * circuiting on the first failure.
+ *
+ * This is the sign-out shape (key-lifecycle audit #6): a single refused leave
+ * must not stop the remaining relays from being attempted, and the failure is
+ * RETURNED rather than thrown so the caller can still run the local clear —
+ * a live membership must not survive because the list failed to empty.
+ */
+export async function leaveEveryCommunity(
+  communities: readonly { relayUrl: string }[],
+  activeRelayUrl: string | undefined,
+  dependencies: LeaveCommunityDependencies = defaultDependencies,
+): Promise<LeaveCommunityOutcome[]> {
+  const outcomes: LeaveCommunityOutcome[] = [];
+  for (const community of communities) {
+    try {
+      const result = await leaveCommunity(
+        community.relayUrl,
+        activeRelayUrl,
+        dependencies,
+      );
+      outcomes.push({ ...result, relayUrl: community.relayUrl });
+    } catch (error) {
+      outcomes.push({ status: "failed", relayUrl: community.relayUrl, error });
+    }
+  }
+  return outcomes;
+}
+
 /** Revoke relay membership and resolve only after the relay accepts the request. */
 export async function leaveCommunity(
   relayUrl: string,

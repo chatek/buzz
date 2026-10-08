@@ -25,8 +25,27 @@ export async function getIdentity(): Promise<Identity> {
   return fromRawIdentity(await invokeTauri<RawIdentity>("get_identity"));
 }
 
+/**
+ * KEPT FOR THE HIDDEN ONBOARDING BACKUP CEREMONY ONLY (key-lifecycle audit #5).
+ *
+ * The settings reveal no longer uses this: `copyNsecToClipboard` does the copy
+ * natively, so the full nsec never enters the renderer that shows remote
+ * message content. The remaining hard dependencies are the gated onboarding
+ * `BackupStep.tsx` and the onboarding `BackupTestFlow.tsx` (behind
+ * `VCLAW_SIGN_IN_ONLY`), which still render the key text directly.
+ */
 export async function getNsec(): Promise<string> {
   return invokeTauri<string>("get_nsec");
+}
+
+/**
+ * Copy the private key to the OS clipboard WITHOUT it ever being held by the
+ * webview. The key is read and the clipboard is written in Rust
+ * (`copy_nsec_to_clipboard`), so the renderer that shows remote message content
+ * never receives the nsec (key-lifecycle audit #5).
+ */
+export async function copyNsecToClipboard(): Promise<void> {
+  await invokeTauri("copy_nsec_to_clipboard");
 }
 
 export async function importIdentity(

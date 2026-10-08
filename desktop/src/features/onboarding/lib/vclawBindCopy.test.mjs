@@ -13,8 +13,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  describeUnstampedBindWarning,
   describeVclawBindFailure,
   describeVclawBindState,
+  isUnstampedBind,
   vclawBindEntersApp,
 } from "./vclawBindCopy.ts";
 
@@ -104,5 +106,27 @@ describe("the bind copy", () => {
     // NEGATIVE CONTROL: the reason code is NOT interpolated into the sentence a person reads. It is
     // the backend's string, and this layer does not vouch for it.
     assert.ok(!line.includes("device_revoked"));
+  });
+
+  it("flags a bound-but-unstamped bind without failing it", () => {
+    const bound = {
+      state: "bound",
+      outcome: "bound",
+      reason: null,
+      status: 201,
+      idempotent: false,
+      npub: null,
+      npubStamped: false,
+    };
+    assert.equal(isUnstampedBind(bound), true);
+    // NEGATIVE CONTROL: the stamp verdict must not change whether the app enters — a bound device
+    // enters whether or not the stamp landed. It only changes WHAT the app says.
+    assert.equal(vclawBindEntersApp(bound), true);
+    // "Not stated" and "stamped" are both clean — only an explicit `false` is the warning.
+    assert.equal(isUnstampedBind({ ...bound, npubStamped: true }), false);
+    assert.equal(isUnstampedBind({ ...bound, npubStamped: null }), false);
+    // The warning names the consequence, not just the fact.
+    assert.match(describeUnstampedBindWarning(), /cannot administer channels/i);
+    assert.match(describeUnstampedBindWarning(), /re-bind/i);
   });
 });

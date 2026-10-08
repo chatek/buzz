@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Check, Copy } from "lucide-react";
+import { toast } from "sonner";
 
 import { HostedCommunityOnboarding } from "@/features/communities/ui/HostedCommunityOnboarding";
 import { useCommunityOnboarding } from "@/features/onboarding/communityOnboarding";
@@ -22,6 +23,10 @@ import {
   VclawSignInFailure,
 } from "@/features/onboarding/vclawSignIn";
 import type { VclawBindReport } from "@/shared/api/vclawPrincipalBind";
+import {
+  describeUnstampedBindWarning,
+  isUnstampedBind,
+} from "@/features/onboarding/lib/vclawBindCopy";
 import { VclawBindNotice } from "@/features/onboarding/ui/VclawBindNotice";
 import type { OrgVerdict } from "@/features/onboarding/vclawOrg";
 import { VclawOrgField } from "@/features/onboarding/ui/VclawOrgField";
@@ -116,6 +121,11 @@ export function WelcomeSetup({
         } = await signInWithVclaw(org);
         setVclawOrg(grantedOrg);
         setVclawBind(bind);
+        // A bound device whose segment stamp did NOT land is still a success (the forward never
+        // fails the bind), but it must not be silent: surface the consequence as a warning.
+        if (isUnstampedBind(bind)) {
+          toast.warning(describeUnstampedBindWarning());
+        }
         setVclawMessage(
           `Signed in to vclaw as ${account.subject}` +
             (provision.error

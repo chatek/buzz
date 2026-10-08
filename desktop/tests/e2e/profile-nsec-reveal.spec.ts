@@ -1,6 +1,10 @@
 /**
- * Compact E2E tests for NsecRevealRow in ProfileSettingsCard.
- * Covers: reveal fetches + renders masked value, error state, collapse clears state.
+ * Compact E2E tests for the native private-key copy in ProfileSettingsCard.
+ *
+ * The settings reveal no longer renders the nsec in the webview
+ * (key-lifecycle audit #5): "Copy key" calls `copy_nsec_to_clipboard`, which
+ * reads the key and writes the clipboard in Rust. These tests pin that the
+ * key text never appears in the DOM and that a failed copy is said out loud.
  */
 import { expect, test } from "@playwright/test";
 import { installMockBridge } from "../helpers/bridge";
@@ -18,7 +22,7 @@ async function expandIdentity(page: import("@playwright/test").Page) {
   await expect(page.getByTestId("profile-identity-details")).toBeVisible();
 }
 
-test("reveal shows masked nsec value and hides it again on collapse", async ({
+test("copy key calls the native clipboard command and never renders the key", async ({
   page,
 }) => {
   await installMockBridge(page);
@@ -26,40 +30,30 @@ test("reveal shows masked nsec value and hides it again on collapse", async ({
   await openSettings(page, "profile");
   await expandIdentity(page);
 
-  const revealToggle = page.getByTestId("profile-private-key-toggle");
-  await expect(revealToggle).toBeVisible();
-  await expect(revealToggle).toHaveText("Reveal");
+  const copyButton = page.getByTestId("profile-private-key-copy");
+  await expect(copyButton).toBeVisible();
+  await expect(copyButton).toHaveText("Copy key");
 
-  // Reveal — the masked nsec display should appear.
-  await revealToggle.click();
-  await expect(revealToggle).toHaveText("Hide");
-  const nsecDisplay = page.locator(
-    '[data-testid="profile-private-key-row"] [data-testid="nsec-value"]',
-  );
-  await expect(nsecDisplay).toBeVisible();
+  await copyButton.click();
+  await expect(copyButton).toHaveText("Copied");
 
-  // The mock bridge returns "nsec1mock…"; the display starts masked (blurred).
-  await expect(nsecDisplay).toHaveCSS("filter", /blur/);
-
-  // Hide — the nsec display should disappear (state cleared).
-  await revealToggle.click();
-  await expect(revealToggle).toHaveText("Reveal");
-  await expect(nsecDisplay).not.toBeVisible();
+  // The whole point of the native command: no key text is ever in the webview.
+  const keyRow = page.getByTestId("profile-private-key-row");
+  await expect(keyRow.locator('[data-testid="nsec-value"]')).toHaveCount(0);
 });
 
-test("reveal shows error when get_nsec fails", async ({ page }) => {
+test("copy key shows error when copy_nsec_to_clipboard fails", async ({
+  page,
+}) => {
   await installMockBridge(page, { nsecError: "Keychain locked" });
   await page.goto("/");
   await openSettings(page, "profile");
   await expandIdentity(page);
 
-  const revealToggle = page.getByTestId("profile-private-key-toggle");
-  await revealToggle.click();
+  const copyButton = page.getByTestId("profile-private-key-copy");
+  await copyButton.click();
 
-  // Error text should appear inside the private-key row.
-  const keyRow = page.getByTestId("profile-private-key-row");
-  await expect(keyRow.locator(".text-destructive")).toBeVisible();
-  await expect(keyRow.locator(".text-destructive")).toContainText(
-    "Keychain locked",
-  );
+  const error = page.getByTestId("profile-private-key-copy-error");
+  await expect(error).toBeVisible();
+  await expect(error).toContainText("Keychain locked");
 });

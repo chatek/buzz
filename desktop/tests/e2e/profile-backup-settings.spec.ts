@@ -34,11 +34,9 @@ async function openBackupSettings(
 }
 
 async function openPrivateKeyMenu(page: Page) {
-  const reveal = page.getByTestId("profile-private-key-toggle");
-  if ((await reveal.textContent())?.trim() === "Reveal") {
-    await reveal.click();
-  }
-  await page.getByTestId("nsec-actions").click();
+  // The key text is no longer revealed in the webview (key-lifecycle audit #5):
+  // Create/Test backup are plain row actions now, so "opening the menu" is just
+  // the private-key row being rendered.
   await expect(page.getByTestId("private-key-create-backup")).toBeVisible();
 }
 
@@ -79,14 +77,18 @@ async function backupSaveCallCount(page: Page) {
   );
 }
 
-test("private key menu replaces the backup settings rows", async ({ page }) => {
+test("the private key row exposes copy, create backup, and test backup directly", async ({
+  page,
+}) => {
   await openBackupSettings(page);
 
   await expect(page.getByTestId("profile-encrypted-backup-row")).toHaveCount(0);
   await expect(page.getByTestId("profile-backup-test-row")).toHaveCount(0);
 
   await openPrivateKeyMenu(page);
-  await expect(page.getByTestId("nsec-copy")).toContainText("Copy");
+  await expect(page.getByTestId("profile-private-key-copy")).toHaveText(
+    "Copy key",
+  );
   await expect(page.getByTestId("private-key-create-backup")).toHaveText(
     "Create backup",
   );
@@ -94,11 +96,13 @@ test("private key menu replaces the backup settings rows", async ({ page }) => {
     "Test backup",
   );
 
-  await page.getByTestId("nsec-copy").click();
-  await expect(page.getByText(/clipboard$/i)).toBeVisible();
-  await expect(page.getByTestId("private-key-create-backup")).toHaveCount(0);
+  await page.getByTestId("profile-private-key-copy").click();
+  await expect(page.getByTestId("profile-private-key-copy")).toHaveText(
+    "Copied",
+  );
+  // The actions are plain row controls now, so they stay visible after a copy.
+  await expect(page.getByTestId("private-key-create-backup")).toBeVisible();
 
-  await openPrivateKeyMenu(page);
   await page.getByTestId("private-key-test-backup").click();
   const testDialog = page.getByTestId("backup-test-dialog");
   await expect(testDialog).toContainText("Test a key backup");
@@ -141,7 +145,7 @@ test("creation requires a sufficiently long password and exposes a temporary hea
   await expect(
     download.getByTestId("encrypted-backup-availability-fill"),
   ).toBeVisible();
-  await expect(keyRow.getByTestId("profile-private-key-toggle")).toBeVisible();
+  await expect(keyRow.getByTestId("profile-private-key-copy")).toBeVisible();
 
   await download.click();
   await expect.poll(() => backupSaveCallCount(page)).toBe(2);

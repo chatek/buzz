@@ -556,13 +556,15 @@ type MockBridgeOptions = {
   /** Native paths returned by successive backup saves. */
   backupSavePaths?: Array<string | null>;
   /**
-   * When set, `get_nsec` throws with this message. For a single always-fail
-   * scenario. Use `nsecErrors` for sequenced fail/succeed.
+   * When set, `get_nsec` (and its native replacement `copy_nsec_to_clipboard`)
+   * throws with this message. For a single always-fail scenario. Use
+   * `nsecErrors` for sequenced fail/succeed.
    */
   nsecError?: string;
   /**
-   * Sequenced results for `get_nsec`. String = throw with that message;
-   * null = succeed. Call N uses results[N]; last entry repeats when exhausted.
+   * Sequenced results for `get_nsec` / `copy_nsec_to_clipboard`. String = throw
+   * with that message; null = succeed. Call N uses results[N]; last entry
+   * repeats when exhausted.
    */
   nsecErrors?: (string | null)[];
   /**

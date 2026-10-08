@@ -1,7 +1,6 @@
-import { Download, Eye, EyeOff, ShieldCheck } from "lucide-react";
+import { Download, ShieldCheck } from "lucide-react";
 import * as React from "react";
 
-import { NsecMaskedDisplay } from "@/features/onboarding/ui/NsecMaskedDisplay";
 import {
   BACKUP_AVAILABILITY_MS,
   useEncryptedBackup,
@@ -11,7 +10,7 @@ import {
   initialBackupTestProgress,
 } from "@/features/settings/ui/BackupTestFlow";
 import { EncryptedBackupCreator } from "@/features/settings/ui/EncryptedBackupCreator";
-import { getNsec } from "@/shared/api/tauriIdentity";
+import { copyNsecToClipboard } from "@/shared/api/tauriIdentity";
 import { Button } from "@/shared/ui/button";
 import {
   Dialog,
@@ -54,14 +53,18 @@ function BackupAvailabilityFill({
 }
 
 /**
- * Collapsible private-key row with backup actions. The nsec is fetched only
- * while expanded; encrypted backup state lives in the app-level provider.
+ * Private-key row with backup actions. The key itself is NEVER held in React
+ * state: "Copy key" calls `copy_nsec_to_clipboard`, which reads the key and
+ * writes the clipboard entirely in Rust, so the renderer that shows remote
+ * message content never holds the full nsec (key-lifecycle audit #5). The
+ * encrypted-backup actions were already native (`create_ncryptsec_backup` /
+ * `verify_ncryptsec_backup`).
  */
 export function PrivateKeyBackupRow() {
-  const [isOpen, setIsOpen] = React.useState(false);
-  const [nsec, setNsec] = React.useState<string | null>(null);
-  const [isLoading, setIsLoading] = React.useState(false);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [copyState, setCopyState] = React.useState<
+    "idle" | "copying" | "copied"
+  >("idle");
+  const [copyError, setCopyError] = React.useState<string | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
   const [testOpen, setTestOpen] = React.useState(false);
   const [testProgress, setTestProgress] = React.useState(
@@ -74,40 +77,19 @@ export function PrivateKeyBackupRow() {
     isSaving,
     startNewBackup,
   } = useEncryptedBackup();
-  const fetchCancelledRef = React.useRef(false);
 
-  React.useEffect(() => {
-    return () => {
-      fetchCancelledRef.current = true;
-      setNsec(null);
-    };
-  }, []);
-
-  async function handleReveal() {
-    if (!isOpen) {
-      fetchCancelledRef.current = false;
-      setIsOpen(true);
-      setIsLoading(true);
-      setLoadError(null);
-      try {
-        const value = await getNsec();
-        if (!fetchCancelledRef.current) setNsec(value);
-      } catch (err) {
-        if (!fetchCancelledRef.current)
-          setLoadError(
-            err instanceof Error
-              ? err.message
-              : "Failed to retrieve private key.",
-          );
-      } finally {
-        if (!fetchCancelledRef.current) setIsLoading(false);
-      }
-      return;
+  async function handleCopy() {
+    setCopyState("copying");
+    setCopyError(null);
+    try {
+      await copyNsecToClipboard();
+      setCopyState("copied");
+    } catch (err) {
+      setCopyState("idle");
+      setCopyError(
+        err instanceof Error ? err.message : "Failed to copy private key.",
+      );
     }
-
-    fetchCancelledRef.current = true;
-    setNsec(null);
-    setIsOpen(false);
   }
 
   function handleCreateBackup() {
@@ -141,53 +123,49 @@ export function PrivateKeyBackupRow() {
               </Button>
             ) : null}
             <Button
-              aria-label={isOpen ? "Hide private key" : "Reveal private key"}
+              aria-label="Copy private key"
               className="rounded-full"
-              data-testid="profile-private-key-toggle"
-              onClick={() => void handleReveal()}
+              data-testid="profile-private-key-copy"
+              disabled={copyState === "copying"}
+              onClick={() => void handleCopy()}
               type="button"
               variant="secondary"
             >
-              {isOpen ? (
-                <>
-                  <EyeOff className="h-4 w-4 shrink-0" />
-                  Hide
-                </>
-              ) : (
-                <>
-                  <Eye className="h-4 w-4 shrink-0" />
-                  Reveal
-                </>
-              )}
+              {copyState === "copying"
+                ? "Copying…"
+                : copyState === "copied"
+                  ? "Copied"
+                  : "Copy key"}
             </Button>
           </div>
         </div>
-        {isOpen ? (
-          <div className="mt-2">
-            {isLoading ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : loadError ? (
-              <p className="text-sm text-destructive">{loadError}</p>
-            ) : nsec ? (
-              <NsecMaskedDisplay
-                actions={[
-                  {
-                    icon: <Download aria-hidden="true" />,
-                    label: "Create backup",
-                    onSelect: handleCreateBackup,
-                    testId: "private-key-create-backup",
-                  },
-                  {
-                    icon: <ShieldCheck aria-hidden="true" />,
-                    label: "Test backup",
-                    onSelect: () => setTestOpen(true),
-                    testId: "private-key-test-backup",
-                  },
-                ]}
-                nsec={nsec}
-              />
-            ) : null}
-          </div>
+        <div className="mt-2 flex items-center gap-2">
+          <Button
+            data-testid="private-key-create-backup"
+            onClick={handleCreateBackup}
+            type="button"
+            variant="outline"
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            Create backup
+          </Button>
+          <Button
+            data-testid="private-key-test-backup"
+            onClick={() => setTestOpen(true)}
+            type="button"
+            variant="outline"
+          >
+            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+            Test backup
+          </Button>
+        </div>
+        {copyError ? (
+          <p
+            className="mt-2 text-sm text-destructive"
+            data-testid="profile-private-key-copy-error"
+          >
+            {copyError}
+          </p>
         ) : null}
       </div>
       <EncryptedBackupCreator onOpenChange={setCreateOpen} open={createOpen} />

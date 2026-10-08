@@ -118,3 +118,21 @@ export function describeVclawBindFailure(report: VclawBindReport): string {
 export function vclawBindEntersApp(report: VclawBindReport): boolean {
   return describeVclawBindState(report.state).entersApp;
 }
+
+/**
+ * True when the bind succeeded but the estate's vgate segment stamp did NOT
+ * land (`npub_stamped: false`). This is NOT a hard failure — the forward never
+ * fails the bind — but it must not be silent: the device is bound yet cannot
+ * administer channels until it re-binds.
+ */
+export function isUnstampedBind(report: VclawBindReport): boolean {
+  return report.state === "bound" && report.npubStamped === false;
+}
+
+/** The one-line warning shown when a bound device's segment stamp did not land. */
+export function describeUnstampedBindWarning(): string {
+  return (
+    "This device is bound, but cannot administer channels until it re-binds — " +
+    "the segment stamp did not land. Sign out and sign in again to re-bind."
+  );
+}
