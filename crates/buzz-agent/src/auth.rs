@@ -52,7 +52,8 @@ const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// refresh (`30s`) ahead of the browser. Rounded to `150s`. A waiter derives
 /// its lock-wait bound from this so it never times out ahead of a healthy
 /// holder.
-const AUTH_ATTEMPT_DEADLINE: Duration = Duration::from_secs(150);
+const AUTH_ATTEMPT_DEADLINE: Duration = Duration::from_secs(330); // must exceed the desktop prompt budget (300s): a 150s cap silently clipped
+// the interactive window and turned slow human logins into timed_out+cooldown
 
 /// How long a same-key caller waits to acquire the cross-process lock before
 /// giving up with [`AuthError::LockTimeout`]. Deliberately longer than
