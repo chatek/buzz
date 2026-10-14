@@ -254,6 +254,20 @@ export async function ensureWelcomeChannel(
     }
   }
 
+  // ADOPTION (2026-10-14): every earlier "Welcome" that no longer passes the
+  // single-human-member check (it gained a member, or a member left and
+  // rejoined elsewhere) used to be orphaned here while a FRESH Welcome was
+  // created — which is how Channels accumulated many Welcomes. A Welcome that
+  // exists is the user's history: adopt the OLDEST candidate (reuse it, fix
+  // its metadata) instead of stacking another one. Creation is the last
+  // resort, for the genuinely-first-time case only.
+  const adoptable = channels
+    .filter(isPrivateWelcomeChannelCandidate)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+  if (adoptable) {
+    return ensureCurrentWelcomeChannelMetadata(client, adoptable);
+  }
+
   return client.createChannel(welcomeChannelInput);
 }
 

@@ -169,6 +169,40 @@ test("ensureWelcomeChannel reuses an existing private solo-member Welcome channe
   assert.equal(createCalls, 0);
 });
 
+test("ensureWelcomeChannel ADOPTS the oldest multi-member Welcome instead of creating another", async () => {
+  // The duplicate-Welcome defect, reproduced: when EVERY existing Welcome has
+  // gained a member, the single-human loop skips them all — and the old code
+  // stacked a FRESH Welcome next to the orphans. The fix adopts the OLDEST.
+  const older = makeChannel({
+    id: "welcome-older",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    memberCount: 2,
+    memberPubkeys: ["current-user", "someone-else"],
+  });
+  const newer = makeChannel({
+    id: "welcome-newer",
+    createdAt: "2026-10-01T00:00:00.000Z",
+    memberCount: 2,
+    memberPubkeys: ["current-user", "someone-else-2"],
+  });
+  let createCalls = 0;
+
+  const result = await ensureWelcomeChannel({
+    getChannels: async () => [newer, older], // deliberately newest-first, like a real listing
+    getChannelMembers: async (channelId) => [
+      { pubkey: "current-user", isAgent: false },
+      { pubkey: channelId === "welcome-older" ? "someone-else" : "someone-else-2", isAgent: false },
+    ],
+    createChannel: async () => {
+      createCalls += 1;
+      return makeChannel({ id: "created-welcome" });
+    },
+  });
+
+  assert.equal(result.id, "welcome-older"); // OLDEST candidate wins
+  assert.equal(createCalls, 0);             // nothing new was stacked
+});
+
 test("ensureWelcomeChannel reuses a Welcome channel with the guide bot", async () => {
   const existingChannel = makeChannel({
     id: "existing-welcome",
