@@ -68,7 +68,9 @@ const VCLAW_CACHE_NAMESPACE: &str = "vclaw-idp";
 /// engine still caps the whole locked attempt at its own
 /// `AUTH_ATTEMPT_DEADLINE` (150s), so a longer value here only spends budget
 /// the attempt would otherwise leave unused.
-const VCLAW_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
+const VCLAW_PROMPT_TIMEOUT: Duration = Duration::from_secs(300); // 120s undershot a real Authelia login (password+2FA): the live report was
+// user_initiated -> timed_out + cooldown, with the provider redirect landing
+// on the listener page AFTER the window closed (code dropped unconsumed)
 /// `userinfo_endpoint`, read off the IdP's own discovery document
 /// (MEASURED 2026-09-20). Used with the access token to learn which account
 /// signed in.
